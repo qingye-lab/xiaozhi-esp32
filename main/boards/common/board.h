@@ -13,6 +13,7 @@
 #include "backlight.h"
 #include "camera.h"
 #include "assets.h"
+#include "network_controller_types.h"
 
 /**
  * Network events for unified callback
@@ -46,6 +47,7 @@ using NetworkEventCallback = std::function<void(NetworkEvent event, const std::s
 void* create_board();
 class AudioCodec;
 class Display;
+class NetworkController;
 class Board {
 private:
     Board(const Board&) = delete; // 禁用拷贝构造函数
@@ -75,6 +77,13 @@ public:
     virtual Camera* GetCamera();
     virtual NetworkInterface* GetNetwork() = 0;
     virtual void StartNetwork() = 0;
+    virtual bool StopNetwork() { return true; }
+    virtual void OnNetworkSwitching(NetworkTransport target, NetworkSwitchReason reason) {
+        (void)target;
+        (void)reason;
+    }
+    virtual std::string GetIdleStatusText() { return {}; }
+    virtual NetworkController* GetNetworkController() { return nullptr; }
     virtual void SetNetworkEventCallback(NetworkEventCallback callback) { (void)callback; }
     virtual const char* GetNetworkStateIcon() = 0;
     virtual bool GetBatteryLevel(int &level, bool& charging, bool& discharging);

@@ -49,9 +49,8 @@ set(INCLUDE_DIRS "." "display" "display/lvgl_display" "display/lvgl_display/jpg"
 list(APPEND SOURCES
     "boards/common/board.cc"
     "boards/common/wifi_board.cc"
-    "boards/common/ml307_board.cc"
     "boards/common/nt26_board.cc"
-    "boards/common/dual_network_board.cc"
+    "boards/common/network_policy.cc"
     "boards/common/adc_battery_monitor.cc"
     "boards/common/axp2101.cc"
     "boards/common/backlight.cc"
@@ -64,6 +63,16 @@ list(APPEND SOURCES
     "boards/common/sy6970.cc"
     "boards/common/system_reset.cc"
 )
+# esp-ml307 3.6.x intentionally omits its AT/UHCI implementation for the classic ESP32 target.
+# Keep the abstract controller API available to shared UI/application code, but only compile the
+# ML307-backed implementation on targets supported by that component.
+if(NOT IDF_TARGET STREQUAL "esp32")
+    list(APPEND SOURCES
+        "boards/common/ml307_board.cc"
+        "boards/common/dual_network_board.cc"
+        "boards/common/network_controller.cc"
+    )
+endif()
 if(CONFIG_XIAOZHI_NETWORK_ETHERNET)
     list(APPEND SOURCES "boards/common/ethernet_board.cc")
 endif()
@@ -135,6 +144,7 @@ elseif(CONFIG_BOARD_TYPE_ESP32_S3_BOX_LITE)
     set(DEFAULT_EMOJI_COLLECTION noto-color-emoji_128)
 elseif(CONFIG_BOARD_TYPE_KEVIN_BOX_2)
     set(BOARD_DIR "kevin/box-2")
+    list(APPEND SOURCES "boards/common/local_control_panel.cc")
     set(BUILTIN_TEXT_FONT font_noto_sans_basic_14_1)
     set(BUILTIN_ICON_FONT font_material_symbols_14_1)
 elseif(CONFIG_BOARD_TYPE_KEVIN_C3)
@@ -1058,6 +1068,12 @@ if(CONFIG_BOARD_TYPE_ESP32_P4_FUNCTION_EV_BOARD)
     list(APPEND MAIN_PRIV_REQUIRES_EXTRA
         esp_driver_sdmmc
         sdmmc
+    )
+endif()
+if(CONFIG_BOARD_TYPE_KEVIN_BOX_2)
+    list(APPEND MAIN_PRIV_REQUIRES_EXTRA
+        esp_http_server
+        esp_wifi
     )
 endif()
 idf_component_register(SRCS ${SOURCES}

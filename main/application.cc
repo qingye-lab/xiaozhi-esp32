@@ -6,6 +6,7 @@
 #include "display.h"
 #include "mcp_server.h"
 #include "mqtt_protocol.h"
+#include "network_controller.h"
 #include "settings.h"
 #include "system_info.h"
 #include "text_glyph_payload.h"
@@ -44,6 +45,20 @@ Application::Application() : notify_player_(audio_service_) {
                                                 .name = "clock_timer",
                                                 .skip_unhandled_events = true};
     esp_timer_create(&clock_timer_args, &clock_timer_handle_);
+
+#if CONFIG_ENABLE_LOCAL_COMMANDS
+    esp_timer_create_args_t local_command_timer_args = {
+        .callback = [](void* arg) {
+            auto* app = static_cast<Application*>(arg);
+            app->Schedule([app]() { app->EndLocalCommandWindow("本地命令已超时"); });
+        },
+        .arg = this,
+        .dispatch_method = ESP_TIMER_TASK,
+        .name = "local_command",
+        .skip_unhandled_events = true,
+    };
+    esp_timer_create(&local_command_timer_args, &local_command_timer_handle_);
+#endif
 }
 
 Application::~Application() {
@@ -51,6 +66,10 @@ Application::~Application() {
     if (clock_timer_handle_ != nullptr) {
         esp_timer_stop(clock_timer_handle_);
         esp_timer_delete(clock_timer_handle_);
+    }
+    if (local_command_timer_handle_ != nullptr) {
+        esp_timer_stop(local_command_timer_handle_);
+        esp_timer_delete(local_command_timer_handle_);
     }
     vEventGroupDelete(event_group_);
 }
@@ -79,6 +98,10 @@ void Application::Initialize() {
     callbacks.on_wake_word_detected = [this](const std::string& wake_word) {
         xEventGroupSetBits(event_group_, MAIN_EVENT_WAKE_WORD_DETECTED);
     };
+    callbacks.on_local_command_detected =
+        [this](const std::string& action, const std::string& text) {
+            Schedule([this, action, text]() { HandleLocalCommand(action, text); });
+        };
     callbacks.on_vad_change = [this](bool speaking) {
         xEventGroupSetBits(event_group_, MAIN_EVENT_VAD_CHANGE);
     };
@@ -129,10 +152,12 @@ void Application::Initialize() {
                 std::string msg = Lang::Strings::CONNECTED_TO;
                 msg += data;
                 display->ShowNotification(msg.c_str(), 30000);
+                Board::GetInstance().GetLed()->OnStateChanged();
                 xEventGroupSetBits(event_group_, MAIN_EVENT_NETWORK_CONNECTED);
                 break;
             }
             case NetworkEvent::Disconnected:
+                Board::GetInstance().GetLed()->OnStateChanged();
                 xEventGroupSetBits(event_group_, MAIN_EVENT_NETWORK_DISCONNECTED);
                 break;
             case NetworkEvent::WifiConfigModeEnter:
@@ -163,6 +188,13 @@ void Application::Initialize() {
         }
     });
 
+    if (auto* controller = board.GetNetworkController()) {
+        controller->SetSwitchRequestCallback(
+            [this](NetworkTransport target, NetworkSwitchReason reason) {
+                Schedule([this, target, reason]() { HandleNetworkSwitchRequest(target, reason); });
+            });
+    }
+
     // Start network asynchronously
     board.StartNetwork();
 
@@ -189,7 +221,8 @@ void Application::Run() {
                 StopNotification();
             }
             SetDeviceState(kDeviceStateIdle);
-            Alert(Lang::Strings::ERROR, last_error_message_.c_str(), "cancel",
+            const auto last_error = GetLastErrorMessage();
+            Alert(Lang::Strings::ERROR, last_error.c_str(), "cancel",
                   Lang::Sounds::OGG_EXCLAMATION);
         }
 
@@ -325,6 +358,46 @@ void Application::HandleNetworkDisconnectedEvent() {
     // Update the status bar immediately to show the network state
     auto display = Board::GetInstance().GetDisplay();
     display->UpdateStatusBar(true);
+}
+
+void Application::HandleNetworkSwitchRequest(NetworkTransport target,
+                                             NetworkSwitchReason reason) {
+    auto& board = Board::GetInstance();
+    auto* controller = board.GetNetworkController();
+    if (controller == nullptr) {
+        return;
+    }
+
+    const auto state = GetDeviceState();
+    if (state == kDeviceStateUpgrading || state == kDeviceStateFatalError ||
+        state == kDeviceStateWifiConfiguring || state == kDeviceStateAudioTesting) {
+        ESP_LOGW(TAG, "Deferring network switch while device is in %s",
+                 DeviceStateMachine::GetStateName(state));
+        controller->CancelPendingSwitch();
+        return;
+    }
+    if (!SetDeviceState(kDeviceStateNetworkSwitching)) {
+        controller->CancelPendingSwitch();
+        return;
+    }
+
+    board.OnNetworkSwitching(target, reason);
+    ESP_LOGI(TAG, "Switching network to %s because %s", ToString(target), ToString(reason));
+    if (state == kDeviceStateNotifying) {
+        StopNotification();
+    }
+    audio_service_.EnableVoiceProcessing(false);
+    audio_service_.EnableWakeWordDetection(false);
+    while (audio_service_.PopPacketFromSendQueue()) {
+    }
+    if (protocol_ && protocol_->IsAudioChannelOpened()) {
+        protocol_->CloseAudioChannel();
+    }
+    protocol_.reset();
+
+    controller->CommitSwitch(target, reason);
+    InitializeProtocol();
+    SetDeviceState(kDeviceStateIdle);
 }
 
 void Application::HandleActivationDoneEvent() {
@@ -480,10 +553,26 @@ void Application::CheckNewVersion() {
         retry_delay = 10;  // Reset retry delay
 
         if (ota_->HasNewVersion()) {
+#if CONFIG_OTA_UPDATE_POLICY_AUTO
             if (UpgradeFirmware(ota_->GetFirmwareUrl(), ota_->GetFirmwareVersion())) {
                 return;  // This line will never be reached after reboot
             }
             // If upgrade failed, continue to normal operation
+#elif CONFIG_OTA_UPDATE_POLICY_NOTIFY
+            Settings update_settings("firmware", true);
+            update_settings.SetBool("ota_ready", true);
+            update_settings.SetString("ota_version", ota_->GetFirmwareVersion());
+            std::string message = "Firmware " + ota_->GetFirmwareVersion() + " available";
+            display->ShowNotification(message.c_str(), 30'000);
+            ESP_LOGI(TAG, "Firmware %s is available; automatic update is disabled",
+                     ota_->GetFirmwareVersion().c_str());
+#else
+            ESP_LOGI(TAG, "A firmware update is available but update checks are disabled");
+#endif
+        } else {
+            Settings update_settings("firmware", true);
+            update_settings.SetBool("ota_ready", false);
+            update_settings.EraseKey("ota_version");
         }
 
         // No new version, mark the current version as valid
@@ -524,19 +613,37 @@ void Application::InitializeProtocol() {
 
     display->SetStatus(Lang::Strings::LOADING_PROTOCOL);
 
-    if (ota_->HasMqttConfig()) {
+    Settings mqtt_settings("mqtt", false);
+    Settings websocket_settings("websocket", false);
+    const bool has_mqtt_config =
+        ota_ ? ota_->HasMqttConfig() : !mqtt_settings.GetString("endpoint").empty();
+    const bool has_websocket_config =
+        ota_ ? ota_->HasWebsocketConfig() : !websocket_settings.GetString("url").empty();
+
+    if (has_mqtt_config) {
         protocol_ = std::make_unique<MqttProtocol>();
-    } else if (ota_->HasWebsocketConfig()) {
+    } else if (has_websocket_config) {
         protocol_ = std::make_unique<WebsocketProtocol>();
     } else {
         ESP_LOGW(TAG, "No protocol specified in the OTA config, using MQTT");
         protocol_ = std::make_unique<MqttProtocol>();
     }
 
-    protocol_->OnConnected([this]() { DismissAlert(); });
+    protocol_->OnConnected([this]() {
+        if (auto* controller = Board::GetInstance().GetNetworkController()) {
+            controller->ReportProtocolConnected();
+        }
+        DismissAlert();
+    });
 
     protocol_->OnNetworkError([this](const std::string& message) {
-        last_error_message_ = message;
+        if (auto* controller = Board::GetInstance().GetNetworkController()) {
+            controller->ReportProtocolFailure();
+        }
+        {
+            std::lock_guard<std::mutex> lock(mutex_);
+            last_error_message_ = message;
+        }
         xEventGroupSetBits(event_group_, MAIN_EVENT_ERROR);
     });
 
@@ -879,13 +986,18 @@ void Application::HandleStopListeningEvent() {
 }
 
 void Application::HandleWakeWordDetectedEvent() {
-    if (!protocol_) {
-        return;
-    }
-
     auto state = GetDeviceState();
     auto wake_word = audio_service_.GetLastWakeWord();
     ESP_LOGI(TAG, "Wake word detected: %s (state: %d)", wake_word.c_str(), (int)state);
+
+    if (state == kDeviceStateIdle && ShouldUseLocalCommands()) {
+        BeginLocalCommandWindow();
+        return;
+    }
+    if (!protocol_) {
+        audio_service_.EnableWakeWordDetection(true);
+        return;
+    }
 
     if (state == kDeviceStateIdle) {
         BeginWakeWordInvoke(wake_word);
@@ -913,6 +1025,113 @@ void Application::HandleWakeWordDetectedEvent() {
         // Restart the activation check if the wake word is detected during activation
         SetDeviceState(kDeviceStateIdle);
     }
+}
+
+bool Application::ShouldUseLocalCommands() const {
+#if CONFIG_ENABLE_LOCAL_COMMANDS
+    auto* controller = Board::GetInstance().GetNetworkController();
+    if (controller == nullptr) {
+        return protocol_ == nullptr;
+    }
+    const auto status = controller->GetStatus();
+    const auto active_health = status.active == NetworkTransport::Wifi
+                                   ? status.wifi_health
+                                   : status.cellular_health;
+    return protocol_ == nullptr || status.active == NetworkTransport::None ||
+           active_health != NetworkHealth::InternetReady;
+#else
+    return false;
+#endif
+}
+
+void Application::BeginLocalCommandWindow() {
+    if (!audio_service_.HasLocalCommands()) {
+        audio_service_.EnableWakeWordDetection(true);
+        return;
+    }
+    local_command_active_ = true;
+    audio_service_.EnableVoiceProcessing(false);
+    audio_service_.EnableLocalCommandDetection(true);
+    auto* display = Board::GetInstance().GetDisplay();
+    display->SetStatus("本地命令 5 秒");
+    display->SetChatMessage("system", "请说网络、电量或静音命令");
+    audio_service_.PlaySound(Lang::Sounds::OGG_POPUP);
+    if (local_command_timer_handle_ != nullptr) {
+        esp_timer_stop(local_command_timer_handle_);
+        esp_timer_start_once(local_command_timer_handle_, 5'000'000);
+    }
+}
+
+void Application::EndLocalCommandWindow(const std::string& message) {
+    if (!local_command_active_) {
+        return;
+    }
+    local_command_active_ = false;
+    if (local_command_timer_handle_ != nullptr) {
+        esp_timer_stop(local_command_timer_handle_);
+    }
+    audio_service_.EnableLocalCommandDetection(false);
+    auto* display = Board::GetInstance().GetDisplay();
+    display->SetStatus(Lang::Strings::STANDBY);
+    display->SetChatMessage("system", "");
+    if (!message.empty()) {
+        display->ShowNotification(message, 3000);
+    }
+    audio_service_.EnableWakeWordDetection(true);
+}
+
+void Application::HandleLocalCommand(const std::string& action, const std::string& text) {
+    if (!local_command_active_) {
+        return;
+    }
+
+    auto& board = Board::GetInstance();
+    auto* controller = board.GetNetworkController();
+    auto* codec = board.GetAudioCodec();
+    std::string result = text;
+
+    if (action == "network_auto" && controller != nullptr) {
+        controller->SetMode(NetworkMode::Auto);
+        result = "网络模式：自动";
+    } else if (action == "network_wifi" && controller != nullptr) {
+        controller->SetMode(NetworkMode::Wifi);
+        result = "网络模式：WiFi";
+    } else if (action == "network_cellular" && controller != nullptr) {
+        controller->SetMode(NetworkMode::Cellular);
+        result = "网络模式：4G";
+    } else if (action == "network_status" && controller != nullptr) {
+        const auto status = controller->GetStatus();
+        result = std::string("当前网络：") + ToString(status.active);
+        if (status.cellular_sim_missing) {
+            result += "，SIM 等待插卡";
+        } else if (status.cellular_retry_limited) {
+            result += "，4G 暂停重试";
+        }
+    } else if (action == "battery_status") {
+        int level = 0;
+        bool charging = false;
+        bool discharging = false;
+        if (board.GetBatteryLevel(level, charging, discharging)) {
+            result = "当前电量：" + std::to_string(level) + "%";
+        } else {
+            result = "无法读取电量";
+        }
+    } else if (action == "speaker_mute") {
+        if (codec->output_volume() > 0) {
+            local_saved_volume_ = codec->output_volume();
+        }
+        codec->SetOutputVolume(0);
+        result = "扬声器已静音";
+    } else if (action == "speaker_restore") {
+        codec->SetOutputVolume(local_saved_volume_ > 0 ? local_saved_volume_ : 50);
+        result = "声音已恢复";
+    } else {
+        result = "未识别的本地命令";
+    }
+
+    ESP_LOGI(TAG, "Handled local command action=%s", action.c_str());
+    audio_service_.PlaySound(Lang::Sounds::OGG_POPUP);
+    EndLocalCommandWindow(result);
 }
 
 void Application::BeginWakeWordInvoke(const std::string& wake_word) {
@@ -991,7 +1210,11 @@ void Application::HandleStateChangedEvent() {
     switch (new_state) {
         case kDeviceStateUnknown:
         case kDeviceStateIdle:
-            display->SetStatus(Lang::Strings::STANDBY);
+            {
+                const auto idle_status = board.GetIdleStatusText();
+                display->SetStatus(idle_status.empty() ? Lang::Strings::STANDBY
+                                                       : idle_status.c_str());
+            }
             display->ClearChatMessages();    // Clear messages first
             display->SetEmotion("neutral");  // Then set emotion (wechat mode checks child count)
             audio_service_.EnableVoiceProcessing(false);
@@ -1037,6 +1260,11 @@ void Application::HandleStateChangedEvent() {
             audio_service_.EnableWakeWordDetection(audio_service_.IsAfeWakeWord());
             break;
         case kDeviceStateWifiConfiguring:
+            audio_service_.EnableVoiceProcessing(false);
+            audio_service_.EnableWakeWordDetection(false);
+            break;
+        case kDeviceStateNetworkSwitching:
+            display->SetStatus("Switching network");
             audio_service_.EnableVoiceProcessing(false);
             audio_service_.EnableWakeWordDetection(false);
             break;
@@ -1336,6 +1564,11 @@ void Application::SetAecMode(AecMode mode) {
 }
 
 void Application::PlaySound(const std::string_view& sound) { audio_service_.PlaySound(sound); }
+
+std::string Application::GetLastErrorMessage() {
+    std::lock_guard<std::mutex> lock(mutex_);
+    return last_error_message_;
+}
 
 void Application::ResetProtocol() {
     Schedule([this]() {

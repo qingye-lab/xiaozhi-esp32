@@ -6,6 +6,21 @@ config OTA_URL
     help
         The application will access this URL to check for new firmwares and server address.
 
+choice OTA_UPDATE_POLICY
+    prompt "Firmware update policy"
+    default OTA_UPDATE_POLICY_AUTO
+    help
+        The version endpoint is still used for activation and protocol configuration in every
+        mode. This choice controls only whether a discovered firmware image is installed.
+
+    config OTA_UPDATE_POLICY_AUTO
+        bool "Automatically install discovered firmware"
+    config OTA_UPDATE_POLICY_NOTIFY
+        bool "Notify only; install through a controlled local build"
+    config OTA_UPDATE_POLICY_DISABLED
+        bool "Ignore discovered firmware versions"
+endchoice
+
 choice
     prompt "Flash Assets"
     default FLASH_DEFAULT_ASSETS if !USE_EMOTE_MESSAGE_STYLE
@@ -895,6 +910,15 @@ choice WAKE_WORD_TYPE
             Requires ESP32-S3, ESP32-P4, or ESP32-S31 and PSRAM
 
 endchoice
+
+config ENABLE_LOCAL_COMMANDS
+    bool "Enable offline fixed commands after WakeNet"
+    default n
+    depends on USE_AFE_WAKE_WORD && (IDF_TARGET_ESP32S3 || IDF_TARGET_ESP32P4 || IDF_TARGET_ESP32S31) && SPIRAM
+    help
+        Keep WakeNet as the normal wake-word engine and load a separate MultiNet
+        model for a five-second, device-only command window when the cloud is
+        unavailable. Recognized audio is handled locally and is never uploaded.
 
 config CUSTOM_WAKE_WORD
     string "Custom Wake Word"

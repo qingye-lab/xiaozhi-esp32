@@ -6,7 +6,11 @@
         {
             "name": "kevin-box-2",
             "legacy_names": ["tudouzi"],
-            "sdkconfig_append": []
+            "sdkconfig_append": [
+                "CONFIG_OTA_UPDATE_POLICY_NOTIFY=y",
+                "CONFIG_ENABLE_LOCAL_COMMANDS=y",
+                "CONFIG_SR_MN_CN_MULTINET6_QUANT=y"
+            ]
         }
     ]
 }
