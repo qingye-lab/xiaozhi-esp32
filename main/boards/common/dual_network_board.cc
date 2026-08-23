@@ -2,6 +2,7 @@
 
 #include <esp_log.h>
 
+#include "dual_network_controller.h"
 #include "mcp_server.h"
 
 namespace {
@@ -15,7 +16,7 @@ DualNetworkBoard::DualNetworkBoard(gpio_num_t ml307_tx_pin, gpio_num_t ml307_rx_
       cellular_board_(
           std::make_unique<Ml307Board>(ml307_tx_pin, ml307_rx_pin, ml307_dtr_pin)),
       network_controller_(
-          std::make_unique<NetworkController>(*wifi_board_, *cellular_board_)) {
+          std::make_unique<DualNetworkController>(*wifi_board_, *cellular_board_)) {
     // New devices use AUTO. The controller migrates an existing network/type value and therefore
     // preserves the user's fixed selection. This parameter remains for source compatibility.
     (void)default_net_type;

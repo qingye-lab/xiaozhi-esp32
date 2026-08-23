@@ -1,10 +1,12 @@
-#include "network_controller.h"
+#include "dual_network_controller.h"
 
 #include <esp_log.h>
 #include <esp_timer.h>
 #include <http.h>
 
+#include "ml307_board.h"
 #include "settings.h"
+#include "wifi_board.h"
 
 namespace {
 
@@ -18,7 +20,7 @@ constexpr EventBits_t kWifiProbeStopped = BIT1;
 constexpr EventBits_t kCellularProbeStopped = BIT2;
 constexpr EventBits_t kAllTasksStopped =
     kWorkerStopped | kWifiProbeStopped | kCellularProbeStopped;
-const char* TAG = "NetworkController";
+const char* TAG = "DualNetworkController";
 
 uint64_t NowMs() {
     return static_cast<uint64_t>(esp_timer_get_time() / 1000);
@@ -26,7 +28,7 @@ uint64_t NowMs() {
 
 }  // namespace
 
-NetworkController::NetworkController(WifiBoard& wifi, Ml307Board& cellular)
+DualNetworkController::DualNetworkController(WifiBoard& wifi, Ml307Board& cellular)
     : wifi_(wifi), cellular_(cellular) {
     lifecycle_events_ = xEventGroupCreate();
     if (lifecycle_events_ != nullptr) {
@@ -35,14 +37,14 @@ NetworkController::NetworkController(WifiBoard& wifi, Ml307Board& cellular)
     LoadAndMigrateSettings();
 }
 
-NetworkController::~NetworkController() {
+DualNetworkController::~DualNetworkController() {
     Stop();
     if (lifecycle_events_ != nullptr) {
         vEventGroupDelete(lifecycle_events_);
     }
 }
 
-void NetworkController::Start() {
+void DualNetworkController::Start() {
     bool expected = false;
     if (!running_.compare_exchange_strong(expected, true)) {
         return;
@@ -66,7 +68,7 @@ void NetworkController::Start() {
     }
 }
 
-void NetworkController::Stop() {
+void DualNetworkController::Stop() {
     running_.exchange(false);
     {
         std::lock_guard<std::mutex> lock(mutex_);
@@ -92,7 +94,7 @@ void NetworkController::Stop() {
     StopCellularAndPowerOff();
 }
 
-bool NetworkController::SetMode(NetworkMode mode) {
+bool DualNetworkController::SetMode(NetworkMode mode) {
     {
         std::lock_guard<std::mutex> lock(mutex_);
         policy_.SetMode(mode, NowMs());
@@ -106,17 +108,17 @@ bool NetworkController::SetMode(NetworkMode mode) {
     return true;
 }
 
-NetworkMode NetworkController::GetMode() const {
+NetworkMode DualNetworkController::GetMode() const {
     std::lock_guard<std::mutex> lock(mutex_);
     return policy_.GetSnapshot().mode;
 }
 
-NetworkStatusSnapshot NetworkController::GetStatus() const {
+NetworkStatusSnapshot DualNetworkController::GetStatus() const {
     std::lock_guard<std::mutex> lock(mutex_);
     return policy_.GetSnapshot();
 }
 
-NetworkInterface* NetworkController::GetNetwork() const {
+NetworkInterface* DualNetworkController::GetNetwork() const {
     const auto active = GetStatus().active;
     if (active == NetworkTransport::Wifi) {
         return wifi_.GetNetwork();
@@ -127,42 +129,42 @@ NetworkInterface* NetworkController::GetNetwork() const {
     return nullptr;
 }
 
-const char* NetworkController::GetNetworkStateIcon() const {
+const char* DualNetworkController::GetNetworkStateIcon() const {
     return GetStatus().active == NetworkTransport::Cellular ? cellular_.GetNetworkStateIcon()
                                                             : wifi_.GetNetworkStateIcon();
 }
 
-void NetworkController::SetPowerSaveLevel(PowerSaveLevel level) {
+void DualNetworkController::SetPowerSaveLevel(PowerSaveLevel level) {
     wifi_.SetPowerSaveLevel(level);
     cellular_.SetPowerSaveLevel(level);
 }
 
-void NetworkController::SetNetworkEventCallback(NetworkEventCallback callback) {
+void DualNetworkController::SetNetworkEventCallback(NetworkEventCallback callback) {
     std::lock_guard<std::mutex> lock(mutex_);
     network_event_callback_ = std::move(callback);
 }
 
-void NetworkController::SetSwitchRequestCallback(SwitchRequestCallback callback) {
+void DualNetworkController::SetSwitchRequestCallback(SwitchRequestCallback callback) {
     std::lock_guard<std::mutex> lock(mutex_);
     switch_request_callback_ = std::move(callback);
 }
 
-void NetworkController::SetCellularPowerControl(std::function<bool(bool)> callback) {
+void DualNetworkController::SetCellularPowerControl(std::function<bool(bool)> callback) {
     std::lock_guard<std::mutex> lock(mutex_);
     cellular_power_control_ = std::move(callback);
 }
 
-void NetworkController::SetExternalPowerProvider(std::function<bool()> callback) {
+void DualNetworkController::SetExternalPowerProvider(std::function<bool()> callback) {
     std::lock_guard<std::mutex> lock(mutex_);
     external_power_provider_ = std::move(callback);
 }
 
-void NetworkController::RefreshPowerPolicy() {
+void DualNetworkController::RefreshPowerPolicy() {
     // The controller worker re-evaluates power policy every second. Keeping this method
     // non-blocking is important because battery notifications may originate on UI tasks.
 }
 
-void NetworkController::CommitSwitch(NetworkTransport target, NetworkSwitchReason reason) {
+void DualNetworkController::CommitSwitch(NetworkTransport target, NetworkSwitchReason reason) {
     {
         std::lock_guard<std::mutex> lock(mutex_);
         policy_.RecordSwitch(target, reason, NowMs());
@@ -175,19 +177,19 @@ void NetworkController::CommitSwitch(NetworkTransport target, NetworkSwitchReaso
     NotifyNetworkEvent(NetworkEvent::Connected, ToString(target));
 }
 
-void NetworkController::CancelPendingSwitch() {
+void DualNetworkController::CancelPendingSwitch() {
     std::lock_guard<std::mutex> lock(mutex_);
     switch_request_pending_ = false;
 }
 
-void NetworkController::ReportProtocolConnected() {
+void DualNetworkController::ReportProtocolConnected() {
     const auto active = GetStatus().active;
     if (active != NetworkTransport::None) {
         ReportHealth(active, NetworkHealth::InternetReady);
     }
 }
 
-void NetworkController::ReportProtocolFailure() {
+void DualNetworkController::ReportProtocolFailure() {
     const auto active = GetStatus().active;
     if (active != NetworkTransport::None) {
         ReportHealth(active, NetworkHealth::Degraded);
@@ -195,8 +197,8 @@ void NetworkController::ReportProtocolFailure() {
     }
 }
 
-void NetworkController::WorkerTaskEntry(void* arg) {
-    auto* controller = static_cast<NetworkController*>(arg);
+void DualNetworkController::WorkerTaskEntry(void* arg) {
+    auto* controller = static_cast<DualNetworkController*>(arg);
     controller->WorkerTask();
     {
         std::lock_guard<std::mutex> lock(controller->mutex_);
@@ -208,7 +210,7 @@ void NetworkController::WorkerTaskEntry(void* arg) {
     vTaskDelete(nullptr);
 }
 
-void NetworkController::WorkerTask() {
+void DualNetworkController::WorkerTask() {
     while (running_) {
         EvaluatePolicy();
 
@@ -234,7 +236,7 @@ void NetworkController::WorkerTask() {
     }
 }
 
-void NetworkController::ProbeTaskEntry(void* arg) {
+void DualNetworkController::ProbeTaskEntry(void* arg) {
     std::unique_ptr<ProbeContext> context(static_cast<ProbeContext*>(arg));
     auto* controller = context->controller;
     const auto transport = context->transport;
@@ -247,7 +249,7 @@ void NetworkController::ProbeTaskEntry(void* arg) {
     vTaskDelete(nullptr);
 }
 
-void NetworkController::Probe(NetworkTransport transport, uint32_t generation) {
+void DualNetworkController::Probe(NetworkTransport transport, uint32_t generation) {
     NetworkInterface* network =
         transport == NetworkTransport::Wifi ? wifi_.GetNetwork() : cellular_.GetNetwork();
     bool ready = false;
@@ -282,7 +284,7 @@ void NetworkController::Probe(NetworkTransport transport, uint32_t generation) {
     }
 }
 
-void NetworkController::StartWifi() {
+void DualNetworkController::StartWifi() {
     if (!running_) {
         return;
     }
@@ -302,7 +304,7 @@ void NetworkController::StartWifi() {
     wifi_.StartNetwork();
 }
 
-void NetworkController::StartCellular() {
+void DualNetworkController::StartCellular() {
     if (!running_) {
         return;
     }
@@ -343,7 +345,7 @@ void NetworkController::StartCellular() {
     cellular_.StartNetwork();
 }
 
-void NetworkController::StopCellularAndPowerOff() {
+void DualNetworkController::StopCellularAndPowerOff() {
     std::function<bool(bool)> power_callback;
     bool should_stop = false;
     bool was_powered = false;
@@ -377,8 +379,8 @@ void NetworkController::StopCellularAndPowerOff() {
     }
 }
 
-void NetworkController::OnTransportEvent(NetworkTransport transport, uint32_t generation,
-                                         NetworkEvent event, const std::string& data) {
+void DualNetworkController::OnTransportEvent(NetworkTransport transport, uint32_t generation,
+                                             NetworkEvent event, const std::string& data) {
     {
         std::lock_guard<std::mutex> lock(mutex_);
         const uint32_t current_generation = transport == NetworkTransport::Wifi
@@ -468,7 +470,7 @@ void NetworkController::OnTransportEvent(NetworkTransport transport, uint32_t ge
     }
 }
 
-void NetworkController::ReportHealth(NetworkTransport transport, NetworkHealth health) {
+void DualNetworkController::ReportHealth(NetworkTransport transport, NetworkHealth health) {
     {
         std::lock_guard<std::mutex> lock(mutex_);
         policy_.ReportHealth(transport, health, NowMs());
@@ -476,7 +478,7 @@ void NetworkController::ReportHealth(NetworkTransport transport, NetworkHealth h
     EvaluatePolicy();
 }
 
-void NetworkController::EvaluatePolicy() {
+void DualNetworkController::EvaluatePolicy() {
     NetworkDecision decision;
     SwitchRequestCallback callback;
     bool initial_switch = false;
@@ -506,7 +508,7 @@ void NetworkController::EvaluatePolicy() {
     }
 }
 
-void NetworkController::ScheduleProbe(NetworkTransport transport) {
+void DualNetworkController::ScheduleProbe(NetworkTransport transport) {
     if (!running_) {
         return;
     }
@@ -544,7 +546,7 @@ void NetworkController::ScheduleProbe(NetworkTransport transport) {
     }
 }
 
-void NetworkController::ApplyPowerPolicy() {
+void DualNetworkController::ApplyPowerPolicy() {
     bool external_power = false;
     NetworkMode mode;
     NetworkTransport active;
@@ -562,7 +564,7 @@ void NetworkController::ApplyPowerPolicy() {
     }
 }
 
-void NetworkController::NotifyNetworkEvent(NetworkEvent event, const std::string& data) {
+void DualNetworkController::NotifyNetworkEvent(NetworkEvent event, const std::string& data) {
     NetworkEventCallback callback;
     {
         std::lock_guard<std::mutex> lock(mutex_);
@@ -573,7 +575,7 @@ void NetworkController::NotifyNetworkEvent(NetworkEvent event, const std::string
     }
 }
 
-void NetworkController::LoadAndMigrateSettings() {
+void DualNetworkController::LoadAndMigrateSettings() {
     Settings settings("network", true);
     std::string mode_value = settings.GetString("mode");
     NetworkMode mode = NetworkMode::Auto;
@@ -596,7 +598,7 @@ void NetworkController::LoadAndMigrateSettings() {
     policy_.SetMode(mode, NowMs());
 }
 
-void NetworkController::SaveMode(NetworkMode mode) {
+void DualNetworkController::SaveMode(NetworkMode mode) {
     Settings settings("network", true);
     settings.SetString("mode", ToString(mode));
 }

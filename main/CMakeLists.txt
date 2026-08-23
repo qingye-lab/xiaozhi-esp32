@@ -49,10 +49,7 @@ set(INCLUDE_DIRS "." "display" "display/lvgl_display" "display/lvgl_display/jpg"
 list(APPEND SOURCES
     "boards/common/board.cc"
     "boards/common/wifi_board.cc"
-    "boards/common/ml307_board.cc"
     "boards/common/nt26_board.cc"
-    "boards/common/dual_network_board.cc"
-    "boards/common/network_controller.cc"
     "boards/common/network_policy.cc"
     "boards/common/adc_battery_monitor.cc"
     "boards/common/axp2101.cc"
@@ -66,6 +63,16 @@ list(APPEND SOURCES
     "boards/common/sy6970.cc"
     "boards/common/system_reset.cc"
 )
+# esp-ml307 3.6.x intentionally omits its AT/UHCI implementation for the classic ESP32 target.
+# Keep the abstract controller API available to shared UI/application code, but only compile the
+# ML307-backed implementation on targets supported by that component.
+if(NOT IDF_TARGET STREQUAL "esp32")
+    list(APPEND SOURCES
+        "boards/common/ml307_board.cc"
+        "boards/common/dual_network_board.cc"
+        "boards/common/network_controller.cc"
+    )
+endif()
 if(CONFIG_XIAOZHI_NETWORK_ETHERNET)
     list(APPEND SOURCES "boards/common/ethernet_board.cc")
 endif()
