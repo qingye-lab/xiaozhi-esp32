@@ -60,5 +60,9 @@
 #define OV_PWDN_IO      4
 #define OV_RESET_IO     5
 
+#if defined(CONFIG_CAMERA_OV5640)
+#define CAMERA_XCLK_FREQ_HZ 24000000
+#else
+#define CAMERA_XCLK_FREQ_HZ 20000000
+#endif
 #endif // _BOARD_CONFIG_H_
-

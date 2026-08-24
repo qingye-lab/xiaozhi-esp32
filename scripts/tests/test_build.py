@@ -43,6 +43,7 @@ class VersionTests(unittest.TestCase):
         self.assertNotIn("waveshare-esp32-p4-nano-10.1-a-p4x", idf6_names)
         self.assertNotIn("espressif-esp32-s31-function-coreboard-1", idf6_names)
         self.assertIn("alientek-atk-dnesp32s3", idf6_names)
+        self.assertIn("alientek-atk-dnesp32s3-ov5640", idf6_names)
         self.assertNotIn("atk-dnesp32s3", idf6_names)
         self.assertNotIn("alientek-alientek-atk-dnesp32s3", idf6_names)
         self.assertIn("m5stack-atom-echos3r", idf6_names)
@@ -416,6 +417,37 @@ class BoardSelectionTests(unittest.TestCase):
                     ),
                     expected_config,
                 )
+
+    def test_atk_dnesp32s3_camera_variants_are_isolated(self):
+        board_dir = ROOT / "main/boards/alientek/atk-dnesp32s3"
+        config = json.loads((board_dir / "config.json").read_text(encoding="utf-8"))
+        variants = {item["name"]: item for item in config["builds"]}
+
+        self.assertEqual(
+            set(variants),
+            {"atk-dnesp32s3", "atk-dnesp32s3-ov5640"},
+        )
+        ov2640_options = set(variants["atk-dnesp32s3"]["sdkconfig_append"])
+        ov5640_options = set(
+            variants["atk-dnesp32s3-ov5640"]["sdkconfig_append"]
+        )
+        self.assertIn("CONFIG_CAMERA_OV2640=y", ov2640_options)
+        self.assertFalse(any("OV5640" in option for option in ov2640_options))
+        self.assertIn("CONFIG_CAMERA_OV5640=y", ov5640_options)
+        self.assertIn(
+            "CONFIG_CAMERA_OV5640_DVP_DEFAULT_FMT_YUV422_800X600_10FPS=y",
+            ov5640_options,
+        )
+        self.assertFalse(any("OV2640" in option for option in ov5640_options))
+
+        config_header = (board_dir / "config.h").read_text(encoding="utf-8")
+        board_source = (board_dir / "atk_dnesp32s3.cc").read_text(
+            encoding="utf-8"
+        )
+        self.assertIn("#if defined(CONFIG_CAMERA_OV5640)", config_header)
+        self.assertIn("#define CAMERA_XCLK_FREQ_HZ 24000000", config_header)
+        self.assertIn("#define CAMERA_XCLK_FREQ_HZ 20000000", config_header)
+        self.assertIn(".xclk_freq = CAMERA_XCLK_FREQ_HZ", board_source)
 
     def test_same_leaf_names_are_scoped_by_manufacturer(self):
         self.assertEqual(

@@ -130,8 +130,7 @@ private:
                                     DISPLAY_WIDTH, DISPLAY_HEIGHT, DISPLAY_OFFSET_X, DISPLAY_OFFSET_Y, DISPLAY_MIRROR_X, DISPLAY_MIRROR_Y, DISPLAY_SWAP_XY);
     }
 
-    // 初始化摄像头：ov2640；
-    // 根据正点原子官方示例参数
+    // Initialize the selected DVP camera using Alientek's board wiring.
     void InitializeCamera() {
         xl9555_->SetOutputState(OV_PWDN_IO, 0); // PWDN=低 (上电)
         xl9555_->SetOutputState(OV_RESET_IO, 0); // 确保复位
@@ -172,7 +171,7 @@ private:
             .reset_pin = CAM_PIN_RESET,   // 实际由 XL9555 控制
             .pwdn_pin = CAM_PIN_PWDN,     // 实际由 XL9555 控制
             .dvp_pin = dvp_pin_config,
-            .xclk_freq = 20000000,
+            .xclk_freq = CAMERA_XCLK_FREQ_HZ,
         };
 
         esp_video_init_config_t video_config = {
