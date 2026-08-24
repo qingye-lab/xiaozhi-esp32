@@ -99,12 +99,18 @@ void McpServer::AddCommonTools() {
 
     auto camera = board.GetCamera();
     if (camera) {
-        AddTool("self.camera.take_photo",
-            "Always remember you have a camera. If the user asks you to see something, use this tool to take a photo and then explain it.\n"
+        std::string camera_description =
+            "Always remember you have a camera. If the user asks you to see something, use this tool to take a photo and then explain it.\n";
+        auto capture_instructions = camera->GetCaptureInstructions();
+        if (!capture_instructions.empty()) {
+            camera_description += "Device-specific privacy rule: " + capture_instructions + "\n";
+        }
+        camera_description +=
             "Args:\n"
             "  `question`: The question that you want to ask about the photo.\n"
             "Return:\n"
-            "  A JSON object that provides the photo information.",
+            "  A JSON object that provides the photo information.";
+        AddTool("self.camera.take_photo", camera_description,
             PropertyList({
                 Property("question", kPropertyTypeString)
             }),
@@ -112,6 +118,10 @@ void McpServer::AddCommonTools() {
                 // Lower the priority to do the camera capture
                 TaskPriorityReset priority_reset(1);
 
+                std::string reason;
+                if (!camera->PrepareCapture(reason)) {
+                    throw std::runtime_error(reason.empty() ? "Camera capture is not currently authorized" : reason);
+                }
                 if (!camera->Capture()) {
                     throw std::runtime_error("Failed to capture photo");
                 }

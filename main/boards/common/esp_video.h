@@ -43,6 +43,8 @@ private:
     std::string explain_token_;
     std::thread encoder_thread_;
 
+    void ReleaseCapturedFrame();
+
 public:
     EspVideo(const esp_video_init_config_t& config);
     ~EspVideo() override;

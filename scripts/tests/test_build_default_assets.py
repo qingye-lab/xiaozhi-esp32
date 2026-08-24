@@ -14,6 +14,19 @@ SPEC.loader.exec_module(BUILD)
 
 
 class BuildDefaultAssetsTest(unittest.TestCase):
+    def test_explicit_emoji_collection_path_takes_precedence(self):
+        with tempfile.TemporaryDirectory() as explicit, tempfile.TemporaryDirectory() as noto:
+            resolved = BUILD.resolve_emoji_collection_path(
+                explicit, "missing-shared-collection", noto
+            )
+            self.assertEqual(resolved, str(Path(explicit).resolve()))
+
+    def test_explicit_emoji_collection_path_must_exist(self):
+        with tempfile.TemporaryDirectory() as directory:
+            missing = Path(directory) / "missing"
+            with self.assertRaisesRegex(ValueError, "Emoji collection directory not found"):
+                BUILD.resolve_emoji_collection_path(str(missing), None, directory)
+
     def test_text_font_metadata_uses_bundle_charset_size_and_bpp(self):
         with tempfile.TemporaryDirectory() as directory:
             assets = Path(directory)

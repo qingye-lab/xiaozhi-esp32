@@ -612,7 +612,9 @@ elseif(CONFIG_BOARD_TYPE_ATK_DNESP32S3)
     set(BOARD_DIR "alientek/atk-dnesp32s3")
     set(BUILTIN_TEXT_FONT font_noto_sans_basic_20_4)
     set(BUILTIN_ICON_FONT font_material_symbols_20_4)
-    set(DEFAULT_EMOJI_COLLECTION noto-color-emoji_128)
+    set(DEFAULT_EMOJI_COLLECTION_PATH
+        "${CMAKE_CURRENT_SOURCE_DIR}/boards/alientek/atk-dnesp32s3/assets/xiaoya"
+    )
 elseif(CONFIG_BOARD_TYPE_ATK_DNESP32S3_BOX)
     set(BOARD_DIR "alientek/atk-dnesp32s3-box")
     set(BUILTIN_TEXT_FONT font_noto_sans_basic_20_4)
@@ -1238,11 +1240,19 @@ function(build_default_assets_bin)
         endif()
     endif()
 
-    # Add default emoji collection if defined
-    if(DEFAULT_EMOJI_COLLECTION)
+    # Prefer a board-local emoji directory when one is explicitly configured.
+    if(DEFAULT_EMOJI_COLLECTION_PATH)
+        list(APPEND BUILD_ARGS "--emoji_collection_path" "${DEFAULT_EMOJI_COLLECTION_PATH}")
+        file(GLOB DEFAULT_EMOJI_FILES CONFIGURE_DEPENDS
+            "${DEFAULT_EMOJI_COLLECTION_PATH}/*.png"
+            "${DEFAULT_EMOJI_COLLECTION_PATH}/*.gif"
+        )
+        list(APPEND DEFAULT_ASSETS_DEPENDENCIES ${DEFAULT_EMOJI_FILES})
+    elseif(DEFAULT_EMOJI_COLLECTION)
         list(APPEND BUILD_ARGS "--emoji_collection" "${DEFAULT_EMOJI_COLLECTION}")
         file(GLOB DEFAULT_EMOJI_FILES CONFIGURE_DEPENDS
             "${NOTO_FONTS_PATH}/png/${DEFAULT_EMOJI_COLLECTION}/*"
+            "${NOTO_FONTS_PATH}/gif/${DEFAULT_EMOJI_COLLECTION}/*"
         )
         list(APPEND DEFAULT_ASSETS_DEPENDENCIES ${DEFAULT_EMOJI_FILES})
     endif()

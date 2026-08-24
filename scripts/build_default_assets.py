@@ -739,6 +739,19 @@ def get_emoji_collection_path(default_emoji_collection, noto_fonts_path, project
     return None
 
 
+def resolve_emoji_collection_path(explicit_path, default_emoji_collection,
+                                  noto_fonts_path, project_root=None):
+    """Resolve an explicit board-local collection before named shared assets."""
+    if explicit_path:
+        resolved = os.path.realpath(explicit_path)
+        if not os.path.isdir(resolved):
+            raise ValueError(f"Emoji collection directory not found: {resolved}")
+        return resolved
+    return get_emoji_collection_path(
+        default_emoji_collection, noto_fonts_path, project_root
+    )
+
+
 def build_assets_integrated(wakenet_model_paths, multinet_model_paths, text_font_path,
                             emoji_collection_path, extra_files_path, output_path,
                             multinet_model_info=None, font_bundle_id=None):
@@ -808,6 +821,7 @@ def main():
     parser.add_argument('--sdkconfig', required=True, help='Path to sdkconfig file')
     parser.add_argument('--builtin_text_font', help='Builtin text font name (e.g., font_noto_sans_basic_16_4)')
     parser.add_argument('--emoji_collection', help='Default emoji collection name (e.g., noto-color-emoji_32)')
+    parser.add_argument('--emoji_collection_path', help='Explicit board-local PNG/GIF collection directory')
     parser.add_argument('--output', required=True, help='Output path for assets.bin')
     parser.add_argument('--esp_sr_model_path', help='Path to ESP-SR model directory')
     parser.add_argument('--noto_fonts_path', help='Path to noto-fonts component directory')
@@ -831,6 +845,7 @@ def main():
     print(f"  sdkconfig: {args.sdkconfig}")
     print(f"  builtin_text_font: {args.builtin_text_font}")
     print(f"  emoji_collection: {args.emoji_collection}")
+    print(f"  emoji_collection_path: {args.emoji_collection_path}")
     print(f"  output: {args.output}")
     
     # Read wake word type configuration from sdkconfig
@@ -882,7 +897,12 @@ def main():
     # Calculate project root from script location for otto-gif support
     script_dir = os.path.dirname(os.path.abspath(__file__))
     project_root = os.path.dirname(script_dir)
-    emoji_collection_path = get_emoji_collection_path(args.emoji_collection, args.noto_fonts_path, project_root)
+    emoji_collection_path = resolve_emoji_collection_path(
+        args.emoji_collection_path,
+        args.emoji_collection,
+        args.noto_fonts_path,
+        project_root,
+    )
     
     # Get extra files path if provided
     extra_files_path = args.extra_files

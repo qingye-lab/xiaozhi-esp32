@@ -1,17 +1,25 @@
-#include "wifi_board.h"
-#include "codecs/es8388_audio_codec.h"
-#include "display/lcd_display.h"
 #include "application.h"
 #include "button.h"
+#include "codecs/es8388_audio_codec.h"
 #include "config.h"
-#include "i2c_device.h"
-#include "led/single_led.h"
+#include "display/lcd_display.h"
 #include "esp_video.h"
+#include "i2c_device.h"
+#include "kid_companion.h"
+#include "led/single_led.h"
+#include "mcp_server.h"
+#include "settings.h"
+#include "wifi_board.h"
 
-#include <esp_log.h>
-#include <esp_lcd_panel_vendor.h>
 #include <driver/i2c_master.h>
 #include <driver/spi_common.h>
+#include <esp_lcd_panel_vendor.h>
+#include <esp_log.h>
+#include <esp_timer.h>
+
+#include <algorithm>
+#include <atomic>
+#include <mutex>
 
 #define TAG "atk_dnesp32s3"
 
@@ -23,6 +31,7 @@ public:
     }
 
     void SetOutputState(uint8_t bit, uint8_t level) {
+        std::lock_guard<std::mutex> lock(mutex_);
         uint16_t data;
         int index = bit;
 
@@ -41,6 +50,35 @@ public:
             WriteReg(0x03, data);
         }
     }
+
+    bool ReadInputState(uint16_t& state) {
+        std::lock_guard<std::mutex> lock(mutex_);
+        state = static_cast<uint16_t>(ReadReg(0x00)) | (static_cast<uint16_t>(ReadReg(0x01)) << 8);
+        return true;
+    }
+
+private:
+    std::mutex mutex_;
+};
+
+class ChildSafeEs8388AudioCodec : public Es8388AudioCodec {
+public:
+    using Es8388AudioCodec::Es8388AudioCodec;
+
+    void Start() override {
+        Settings settings("audio", false);
+        int stored_volume = settings.GetInt("output_volume", 45);
+        output_volume_ = std::clamp(stored_volume, 0, 70);
+        if (stored_volume != output_volume_) {
+            Settings writable_settings("audio", true);
+            writable_settings.SetInt("output_volume", output_volume_);
+        }
+        ESP_LOGI(TAG, "Child-safe audio codec started at %d%%", output_volume_);
+    }
+
+    void SetOutputVolume(int volume) override {
+        Es8388AudioCodec::SetOutputVolume(std::clamp(volume, 0, 70));
+    }
 };
 
 class atk_dnesp32s3 : public WifiBoard {
@@ -49,7 +87,11 @@ private:
     Button boot_button_;
     LcdDisplay* display_;
     XL9555* xl9555_;
-    EspVideo* camera_;
+    EspVideo* camera_impl_;
+    ChildSafeCamera* camera_;
+    KidSensorHub* sensor_hub_;
+    ChildProfile child_profile_;
+    std::atomic<int64_t> profile_clear_deadline_ms_{0};
 
     void InitializeI2c() {
         // Initialize I2C peripheral
@@ -61,7 +103,8 @@ private:
             .glitch_ignore_cnt = 7,
             .intr_priority = 0,
             .trans_queue_depth = 0,
-            .flags = {
+            .flags =
+                {
                 .enable_internal_pullup = 1,
             },
         };
@@ -92,6 +135,133 @@ private:
             }
             app.ToggleChatState();
         });
+    }
+
+    void HandleKidKey(KidKey key, kid_companion::ButtonEvent event) {
+        auto& app = Application::GetInstance();
+        auto codec = GetAudioCodec();
+        auto display = GetDisplay();
+        int64_t now_ms = esp_timer_get_time() / 1000;
+
+        switch (key) {
+            case KidKey::kKey0: {
+                int volume = event == kid_companion::ButtonEvent::kLongPress
+                                 ? 70
+                                 : codec->output_volume() + 10;
+                codec->SetOutputVolume(volume);
+                display->ShowNotification("音量 " + std::to_string(codec->output_volume()) + "%");
+                break;
+            }
+            case KidKey::kKey1: {
+                int volume = event == kid_companion::ButtonEvent::kLongPress
+                                 ? 0
+                                 : codec->output_volume() - 10;
+                codec->SetOutputVolume(volume);
+                display->ShowNotification(
+                    volume == 0 ? "已静音"
+                                : "音量 " + std::to_string(codec->output_volume()) + "%");
+                break;
+            }
+            case KidKey::kKey2:
+                if (profile_clear_deadline_ms_.load() >= now_ms) {
+                    child_profile_.ClearAll();
+                    profile_clear_deadline_ms_.store(0);
+                    camera_->Cancel();
+                    display->ShowNotification("成长记忆已清除");
+                } else {
+                    profile_clear_deadline_ms_.store(0);
+                    camera_->Arm();
+                    display->ShowNotification("相机已确认，请说“拍吧”");
+                    app.StartListening();
+                }
+                break;
+            case KidKey::kKey3:
+                camera_->Cancel();
+                if (event == kid_companion::ButtonEvent::kLongPress) {
+                    profile_clear_deadline_ms_.store(now_ms + 10'000);
+                    display->ShowNotification("清除成长记忆？10 秒内按 KEY2 确认");
+                } else {
+                    profile_clear_deadline_ms_.store(0);
+                    if (app.GetDeviceState() == kDeviceStateSpeaking) {
+                        app.AbortSpeaking(kAbortReasonNone);
+                    } else {
+                        app.StopListening();
+                    }
+                    display->ShowNotification("已取消");
+                }
+                break;
+        }
+    }
+
+    void InitializeKidCompanion() {
+        sensor_hub_ = new KidSensorHub(
+            i2c_bus_, [this](uint16_t& inputs) { return xl9555_->ReadInputState(inputs); },
+            [this](KidKey key, kid_companion::ButtonEvent event) {
+                Application::GetInstance().Schedule(
+                    [this, key, event]() { HandleKidKey(key, event); });
+            });
+        camera_ = new ChildSafeCamera(camera_impl_, sensor_hub_);
+    }
+
+    void InitializeTools() {
+        auto& mcp_server = McpServer::GetInstance();
+        mcp_server.AddTool(
+            "self.sensors.get_environment",
+            "读取设备周围的粗粒度环境状态。用户询问光线、设备是否放稳或是否有手靠近时使用。"
+            "只返回 dark/normal/bright、near 和 stable/moving，不用于跟踪儿童。",
+            PropertyList(), [this](const PropertyList&) -> ReturnValue {
+                return sensor_hub_->GetEnvironmentJson();
+            });
+
+        mcp_server.AddTool(
+            "self.child_profile.get",
+            "读取" KID_COMPANION_NAME "在本机保存的有限成长记忆。开始个性化鼓励前使用。",
+            PropertyList(),
+            [this](const PropertyList&) -> ReturnValue { return child_profile_.GetJson(); });
+
+        mcp_server.AddTool(
+            "self.child_profile.remember",
+            "仅保存孩子明确表达的非敏感偏好。category 只能是 nickname、interest、"
+            "learned_topic 或 encouragement；禁止保存学校、地址、联系方式、秘密、账号或照片。",
+            PropertyList({Property("category", kPropertyTypeString),
+                          Property("value", kPropertyTypeString)}),
+            [this](const PropertyList& properties) -> ReturnValue {
+                std::string reason;
+                if (!child_profile_.Remember(properties["category"].value<std::string>(),
+                                             properties["value"].value<std::string>(), reason)) {
+                    throw std::runtime_error(reason);
+                }
+                return child_profile_.GetJson();
+            });
+
+        mcp_server.AddTool(
+            "self.child_profile.forget",
+            "按孩子或家长的明确语音要求删除本机成长记忆。category 可为 nickname、interest、"
+            "learned_topic、encouragement 或 all；value 留空时清除该类别。",
+            PropertyList({Property("category", kPropertyTypeString),
+                          Property("value", kPropertyTypeString, std::string(""))}),
+            [this](const PropertyList& properties) -> ReturnValue {
+                std::string reason;
+                if (!child_profile_.Forget(properties["category"].value<std::string>(),
+                                           properties["value"].value<std::string>(), reason)) {
+                    throw std::runtime_error(reason);
+                }
+                return child_profile_.GetJson();
+            });
+
+        mcp_server.AddTool(
+            "self.system.reconfigure_wifi",
+            "进入无需互联网的本地 Wi-Fi 配网模式。调用前必须向用户确认；只有用户明确同意后"
+            "才把 confirmed 设为 true。进入后请说明连接屏幕显示的 Xiaozhi 热点，并在浏览器"
+            "打开屏幕显示的本地地址。",
+            PropertyList({Property("confirmed", kPropertyTypeBoolean)}),
+            [this](const PropertyList& properties) -> ReturnValue {
+                if (!properties["confirmed"].value<bool>()) {
+                    throw std::runtime_error("用户尚未确认进入本地配网模式");
+                }
+                EnterWifiConfigMode();
+                return true;
+            });
     }
 
     void InitializeSt7789Display() {
@@ -140,7 +310,8 @@ private:
 
         static esp_cam_ctlr_dvp_pin_config_t dvp_pin_config = {
             .data_width = CAM_CTLR_DATA_WIDTH_8,
-            .data_io = {
+            .data_io =
+                {
                 [0] = CAM_PIN_D0,
                 [1] = CAM_PIN_D1,
                 [2] = CAM_PIN_D2,
@@ -158,7 +329,8 @@ private:
 
         esp_video_init_sccb_config_t sccb_config = {
             .init_sccb = true,
-            .i2c_config = {
+            .i2c_config =
+                {
                 .port = 1,
                 .scl_pin = CAM_PIN_SIOC,
                 .sda_pin = CAM_PIN_SIOD,
@@ -178,7 +350,7 @@ private:
             .dvp = &dvp_config,
         };
 
-        camera_ = new EspVideo(video_config);
+        camera_impl_ = new EspVideo(video_config);
     }
 
 public:
@@ -188,6 +360,9 @@ public:
         InitializeSt7789Display();
         InitializeButtons();
         InitializeCamera();
+        InitializeKidCompanion();
+        InitializeTools();
+        sensor_hub_->Start();
     }
 
     virtual Led* GetLed() override {
@@ -196,7 +371,7 @@ public:
     }
 
     virtual AudioCodec* GetAudioCodec() override {
-        static Es8388AudioCodec audio_codec(
+        static ChildSafeEs8388AudioCodec audio_codec(
             i2c_bus_, 
             I2C_NUM_0, 
             AUDIO_INPUT_SAMPLE_RATE, 

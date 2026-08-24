@@ -22,6 +22,9 @@
 
 #define BUILTIN_LED_GPIO GPIO_NUM_1
 
+// Single board-local identity knob for the child companion persona.
+#define KID_COMPANION_NAME "小芽"
+
 #define LCD_SCLK_PIN GPIO_NUM_12
 #define LCD_MOSI_PIN GPIO_NUM_11
 #define LCD_MISO_PIN GPIO_NUM_13

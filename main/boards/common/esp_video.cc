@@ -9,6 +9,8 @@
 #include <esp_heap_caps.h>
 #include <cstdio>
 #include <cstring>
+#include <functional>
+#include <utility>
 
 #include "esp_imgfx_color_convert.h"
 #include "esp_video_device.h"
@@ -55,6 +57,27 @@
 
 
 #define TAG "EspVideo"
+
+namespace {
+
+class ScopeExit {
+public:
+    explicit ScopeExit(std::function<void()> callback) : callback_(std::move(callback)) {}
+    ScopeExit(const ScopeExit&) = delete;
+    ScopeExit& operator=(const ScopeExit&) = delete;
+    ~ScopeExit() {
+        if (callback_) {
+            callback_();
+        }
+    }
+
+    void Dismiss() { callback_ = nullptr; }
+
+private:
+    std::function<void()> callback_;
+};
+
+}  // namespace
 
 #if CONFIG_XIAOZHI_CAMERA_MIRROR_CONFIGURED
 #if CONFIG_XIAOZHI_CAMERA_HMIRROR
@@ -386,6 +409,10 @@ EspVideo::EspVideo(const esp_video_init_config_t& config) {
 }
 
 EspVideo::~EspVideo() {
+    if (encoder_thread_.joinable()) {
+        encoder_thread_.join();
+    }
+    ReleaseCapturedFrame();
     if (streaming_on_ && video_fd_ >= 0) {
         int type = V4L2_BUF_TYPE_VIDEO_CAPTURE;
         ioctl(video_fd_, VIDIOC_STREAMOFF, &type);
@@ -403,6 +430,16 @@ EspVideo::~EspVideo() {
     esp_video_deinit();
 }
 
+void EspVideo::ReleaseCapturedFrame() {
+    if (frame_.data != nullptr) {
+        memset(frame_.data, 0, frame_.len);
+        heap_caps_free(frame_.data);
+    }
+    frame_.data = nullptr;
+    frame_.len = 0;
+    frame_.format = 0;
+}
+
 void EspVideo::SetExplainUrl(const std::string& url, const std::string& token) {
     explain_url_ = url;
     explain_token_ = token;
@@ -412,6 +449,8 @@ bool EspVideo::Capture() {
     if (encoder_thread_.joinable()) {
         encoder_thread_.join();
     }
+    ReleaseCapturedFrame();
+    ScopeExit cleanup([this]() { ReleaseCapturedFrame(); });
 
     if (!streaming_on_ || video_fd_ < 0) {
         return false;
@@ -427,11 +466,6 @@ bool EspVideo::Capture() {
         }
         if (i == 2) {
             // 保存帧副本到PSRAM
-            if (frame_.data) {
-                heap_caps_free(frame_.data);
-                frame_.data = nullptr;
-                frame_.format = 0;
-            }
             frame_.len = buf.bytesused;
             frame_.data = (uint8_t*)heap_caps_malloc(frame_.len, MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT);
             if (!frame_.data) {
@@ -866,6 +900,7 @@ bool EspVideo::Capture() {
         auto image = std::make_unique<LvglAllocatedImage>(data, lvgl_image_size, w, h, stride, color_format);
         display->SetPreviewImage(std::move(image));
     }
+    cleanup.Dismiss();
     return true;
 }
 
@@ -927,6 +962,10 @@ bool EspVideo::SetVFlip(bool enabled) {
  * @warning 如果摄像头缓冲区为空或网络连接失败，将返回错误信息
  */
 std::string EspVideo::Explain(const std::string& question) {
+    ScopeExit cleanup([this]() { ReleaseCapturedFrame(); });
+    if (frame_.data == nullptr || frame_.len == 0) {
+        throw std::runtime_error("No captured image is available");
+    }
     if (explain_url_.empty()) {
         throw std::runtime_error("Image explain URL or token is not set");
     }
