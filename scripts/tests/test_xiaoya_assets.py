@@ -116,6 +116,15 @@ public:
 int main() {
     using namespace kid_companion;
 
+    assert(kDefaultOutputVolume == 45);
+    assert(kMaximumOutputVolume == 70);
+    assert(kCriticalI2cMaxAttempts == 3);
+    assert(kCriticalI2cRetryDelayMs == 50);
+    assert(ClampOutputVolume(-10) == 0);
+    assert(ClampOutputVolume(45) == 45);
+    assert(ClampOutputVolume(70) == 70);
+    assert(ClampOutputVolume(100) == 70);
+
     LegacyCamera legacy_camera;
     std::string camera_reason = "stale";
     assert(legacy_camera.GetCaptureInstructions().empty());

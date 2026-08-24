@@ -4,7 +4,6 @@
 #include "config.h"
 #include "display/lcd_display.h"
 #include "esp_video.h"
-#include "i2c_device.h"
 #include "kid_companion.h"
 #include "led/single_led.h"
 #include "mcp_server.h"
@@ -17,47 +16,113 @@
 #include <esp_log.h>
 #include <esp_timer.h>
 
-#include <algorithm>
 #include <atomic>
 #include <mutex>
 
 #define TAG "atk_dnesp32s3"
 
-class XL9555 : public I2cDevice {
+class XL9555 {
 public:
-    XL9555(i2c_master_bus_handle_t i2c_bus, uint8_t addr) : I2cDevice(i2c_bus, addr) {
-        WriteReg(0x06, 0x03);
-        WriteReg(0x07, 0xF0);
+    XL9555(i2c_master_bus_handle_t i2c_bus, uint8_t addr) : i2c_bus_(i2c_bus) {
+        i2c_device_config_t config = {
+            .dev_addr_length = I2C_ADDR_BIT_LEN_7,
+            .device_address = addr,
+            .scl_speed_hz = 400 * 1000,
+            .scl_wait_us = 0,
+            .flags = {.disable_ack_check = 0},
+        };
+        ESP_ERROR_CHECK(i2c_master_bus_add_device(i2c_bus_, &config, &device_));
     }
 
-    void SetOutputState(uint8_t bit, uint8_t level) {
+    esp_err_t Initialize() {
+        esp_err_t error = ESP_FAIL;
+        for (int attempt = 1; attempt <= kid_companion::kCriticalI2cMaxAttempts; ++attempt) {
+            uint8_t port0_config = 0;
+            uint8_t port1_config = 0;
+            error = WriteRegister(0x06, 0x03);
+            if (error == ESP_OK) {
+                error = WriteRegister(0x07, 0xF0);
+            }
+            if (error == ESP_OK) {
+                error = ReadRegister(0x06, port0_config);
+            }
+            if (error == ESP_OK) {
+                error = ReadRegister(0x07, port1_config);
+            }
+            if (error == ESP_OK && port0_config == 0x03 && port1_config == 0xF0) {
+                if (attempt > 1) {
+                    ESP_LOGI(TAG, "XL9555 initialized after %d attempts", attempt);
+                }
+                return ESP_OK;
+            }
+            if (error == ESP_OK) {
+                error = ESP_ERR_INVALID_RESPONSE;
+            }
+            ESP_LOGW(TAG, "XL9555 initialization attempt %d failed: %s", attempt,
+                     esp_err_to_name(error));
+            if (attempt < kid_companion::kCriticalI2cMaxAttempts) {
+                esp_err_t reset_error = i2c_master_bus_reset(i2c_bus_);
+                if (reset_error != ESP_OK) {
+                    ESP_LOGW(TAG, "XL9555 I2C recovery failed: %s", esp_err_to_name(reset_error));
+                }
+                vTaskDelay(pdMS_TO_TICKS(kid_companion::kCriticalI2cRetryDelayMs));
+            }
+        }
+        return error;
+    }
+
+    esp_err_t SetOutputState(uint8_t bit, uint8_t level) {
         std::lock_guard<std::mutex> lock(mutex_);
-        uint16_t data;
-        int index = bit;
-
-        if (bit < 8) {
-            data = ReadReg(0x02);
-        } else {
-            data = ReadReg(0x03);
-            index -= 8;
+        if (bit >= 16 || level > 1) {
+            return ESP_ERR_INVALID_ARG;
         }
 
-        data = (data & ~(1 << index)) | (level << index);
-
-        if (bit < 8) {
-            WriteReg(0x02, data);
-        } else {
-            WriteReg(0x03, data);
+        esp_err_t error = ESP_FAIL;
+        const uint8_t reg = bit < 8 ? 0x02 : 0x03;
+        const uint8_t index = bit % 8;
+        for (int attempt = 1; attempt <= kid_companion::kCriticalI2cMaxAttempts; ++attempt) {
+            uint8_t data = 0;
+            error = ReadRegister(reg, data);
+            if (error == ESP_OK) {
+                data = static_cast<uint8_t>((data & ~(1U << index)) | (level << index));
+                error = WriteRegister(reg, data);
+            }
+            if (error == ESP_OK) {
+                return ESP_OK;
+            }
+            ESP_LOGW(TAG, "XL9555 output update attempt %d failed: %s", attempt,
+                     esp_err_to_name(error));
+            if (attempt < kid_companion::kCriticalI2cMaxAttempts) {
+                i2c_master_bus_reset(i2c_bus_);
+                vTaskDelay(pdMS_TO_TICKS(kid_companion::kCriticalI2cRetryDelayMs));
+            }
         }
+        return error;
     }
 
     bool ReadInputState(uint16_t& state) {
         std::lock_guard<std::mutex> lock(mutex_);
-        state = static_cast<uint16_t>(ReadReg(0x00)) | (static_cast<uint16_t>(ReadReg(0x01)) << 8);
+        uint8_t port0 = 0;
+        uint8_t port1 = 0;
+        if (ReadRegister(0x00, port0) != ESP_OK || ReadRegister(0x01, port1) != ESP_OK) {
+            return false;
+        }
+        state = static_cast<uint16_t>(port0) | (static_cast<uint16_t>(port1) << 8);
         return true;
     }
 
 private:
+    esp_err_t WriteRegister(uint8_t reg, uint8_t value) {
+        uint8_t data[] = {reg, value};
+        return i2c_master_transmit(device_, data, sizeof(data), 100);
+    }
+
+    esp_err_t ReadRegister(uint8_t reg, uint8_t& value) {
+        return i2c_master_transmit_receive(device_, &reg, 1, &value, 1, 100);
+    }
+
+    i2c_master_bus_handle_t i2c_bus_;
+    i2c_master_dev_handle_t device_ = nullptr;
     std::mutex mutex_;
 };
 
@@ -67,8 +132,8 @@ public:
 
     void Start() override {
         Settings settings("audio", false);
-        int stored_volume = settings.GetInt("output_volume", 45);
-        output_volume_ = std::clamp(stored_volume, 0, 70);
+        int stored_volume = settings.GetInt("output_volume", kid_companion::kDefaultOutputVolume);
+        output_volume_ = kid_companion::ClampOutputVolume(stored_volume);
         if (stored_volume != output_volume_) {
             Settings writable_settings("audio", true);
             writable_settings.SetInt("output_volume", output_volume_);
@@ -77,7 +142,7 @@ public:
     }
 
     void SetOutputVolume(int volume) override {
-        Es8388AudioCodec::SetOutputVolume(std::clamp(volume, 0, 70));
+        Es8388AudioCodec::SetOutputVolume(kid_companion::ClampOutputVolume(volume));
     }
 };
 
@@ -105,13 +170,14 @@ private:
             .trans_queue_depth = 0,
             .flags =
                 {
-                .enable_internal_pullup = 1,
-            },
+                    .enable_internal_pullup = 1,
+                },
         };
         ESP_ERROR_CHECK(i2c_new_master_bus(&i2c_bus_cfg, &i2c_bus_));
 
         // Initialize XL9555
         xl9555_ = new XL9555(i2c_bus_, 0x20);
+        ESP_ERROR_CHECK(xl9555_->Initialize());
     }
 
     // Initialize spi peripheral
@@ -146,7 +212,7 @@ private:
         switch (key) {
             case KidKey::kKey0: {
                 int volume = event == kid_companion::ButtonEvent::kLongPress
-                                 ? 70
+                                 ? kid_companion::kMaximumOutputVolume
                                  : codec->output_volume() + 10;
                 codec->SetOutputVolume(volume);
                 display->ShowNotification("音量 " + std::to_string(codec->output_volume()) + "%");
@@ -287,40 +353,41 @@ private:
         panel_config.bits_per_pixel = 16;
         panel_config.data_endian = LCD_RGB_DATA_ENDIAN_BIG,
         esp_lcd_new_panel_st7789(panel_io, &panel_config, &panel);
-        
+
         esp_lcd_panel_reset(panel);
-        xl9555_->SetOutputState(8, 1);
-        xl9555_->SetOutputState(2, 0);
+        ESP_ERROR_CHECK(xl9555_->SetOutputState(8, 1));
+        ESP_ERROR_CHECK(xl9555_->SetOutputState(2, 0));
 
         esp_lcd_panel_init(panel);
         esp_lcd_panel_invert_color(panel, DISPLAY_BACKLIGHT_OUTPUT_INVERT);
-        esp_lcd_panel_swap_xy(panel, DISPLAY_SWAP_XY); 
+        esp_lcd_panel_swap_xy(panel, DISPLAY_SWAP_XY);
         esp_lcd_panel_mirror(panel, DISPLAY_MIRROR_X, DISPLAY_MIRROR_Y);
-        display_ = new SpiLcdDisplay(panel_io, panel,
-                                    DISPLAY_WIDTH, DISPLAY_HEIGHT, DISPLAY_OFFSET_X, DISPLAY_OFFSET_Y, DISPLAY_MIRROR_X, DISPLAY_MIRROR_Y, DISPLAY_SWAP_XY);
+        display_ = new SpiLcdDisplay(panel_io, panel, DISPLAY_WIDTH, DISPLAY_HEIGHT,
+                                     DISPLAY_OFFSET_X, DISPLAY_OFFSET_Y, DISPLAY_MIRROR_X,
+                                     DISPLAY_MIRROR_Y, DISPLAY_SWAP_XY);
     }
 
     // Initialize the selected DVP camera using Alientek's board wiring.
     void InitializeCamera() {
-        xl9555_->SetOutputState(OV_PWDN_IO, 0); // PWDN=低 (上电)
-        xl9555_->SetOutputState(OV_RESET_IO, 0); // 确保复位
-        vTaskDelay(pdMS_TO_TICKS(50));           // 延长复位保持时间
-        xl9555_->SetOutputState(OV_RESET_IO, 1); // 释放复位
-        vTaskDelay(pdMS_TO_TICKS(50));           // 延长 50ms
+        ESP_ERROR_CHECK(xl9555_->SetOutputState(OV_PWDN_IO, 0));   // PWDN=低 (上电)
+        ESP_ERROR_CHECK(xl9555_->SetOutputState(OV_RESET_IO, 0));  // 确保复位
+        vTaskDelay(pdMS_TO_TICKS(50));                             // 延长复位保持时间
+        ESP_ERROR_CHECK(xl9555_->SetOutputState(OV_RESET_IO, 1));  // 释放复位
+        vTaskDelay(pdMS_TO_TICKS(50));                             // 延长 50ms
 
         static esp_cam_ctlr_dvp_pin_config_t dvp_pin_config = {
             .data_width = CAM_CTLR_DATA_WIDTH_8,
             .data_io =
                 {
-                [0] = CAM_PIN_D0,
-                [1] = CAM_PIN_D1,
-                [2] = CAM_PIN_D2,
-                [3] = CAM_PIN_D3,
-                [4] = CAM_PIN_D4,
-                [5] = CAM_PIN_D5,
-                [6] = CAM_PIN_D6,
-                [7] = CAM_PIN_D7,
-            },
+                    [0] = CAM_PIN_D0,
+                    [1] = CAM_PIN_D1,
+                    [2] = CAM_PIN_D2,
+                    [3] = CAM_PIN_D3,
+                    [4] = CAM_PIN_D4,
+                    [5] = CAM_PIN_D5,
+                    [6] = CAM_PIN_D6,
+                    [7] = CAM_PIN_D7,
+                },
             .vsync_io = CAM_PIN_VSYNC,
             .de_io = CAM_PIN_HREF,
             .pclk_io = CAM_PIN_PCLK,

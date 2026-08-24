@@ -8,6 +8,13 @@
 
 namespace kid_companion {
 
+inline constexpr int kDefaultOutputVolume = 45;
+inline constexpr int kMaximumOutputVolume = 70;
+inline constexpr int kCriticalI2cMaxAttempts = 3;
+inline constexpr int kCriticalI2cRetryDelayMs = 50;
+
+inline int ClampOutputVolume(int volume) { return std::clamp(volume, 0, kMaximumOutputVolume); }
+
 enum class LightLevel { kDark, kNormal, kBright };
 
 inline const char* LightLevelName(LightLevel level) {
