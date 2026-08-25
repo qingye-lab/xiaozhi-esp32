@@ -475,6 +475,22 @@ public:
     virtual Camera* GetCamera() override {
         return camera_;
     }
+
+    bool HasOfflineVoiceCommands() const override {
+        return true;
+    }
+
+    bool HandleOfflineVoiceCommand(const std::string& action,
+                                   const std::string& text) override {
+        if (action != "wifi_config") {
+            return false;
+        }
+        ESP_LOGI(TAG, "Starting offline WiFi configuration from voice command: %s",
+                 text.c_str());
+        display_->ShowNotification("正在启动离线配网热点…");
+        RebootIntoWifiConfigMode();
+        return true;
+    }
 };
 
 DECLARE_BOARD(atk_dnesp32s3);

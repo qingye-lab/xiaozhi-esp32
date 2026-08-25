@@ -84,6 +84,14 @@ bool AfeAudioEngine::Initialize(AudioCodec* codec, int frame_duration_ms, srmode
                 wake_word_detected_callback_(wake_word);
             }
         });
+        custom_wake_word_->OnOfflineCommandDetected(
+            [this](const std::string& action, const std::string& text) {
+                xEventGroupClearBits(event_group_, kWakeWordEnabled);
+                UpdateActiveState();
+                if (offline_command_detected_callback_) {
+                    offline_command_detected_callback_(action, text);
+                }
+            });
         if (!custom_wake_word_->Initialize(codec_, models_)) {
             ESP_LOGE(TAG, "Failed to initialize MultiNet wake-word detector");
             custom_wake_word_.reset();
@@ -269,6 +277,11 @@ size_t AfeAudioEngine::GetFeedSize() const {
 
 void AfeAudioEngine::OnWakeWordDetected(std::function<void(const std::string& wake_word)> callback) {
     wake_word_detected_callback_ = std::move(callback);
+}
+
+void AfeAudioEngine::OnOfflineCommandDetected(
+    std::function<void(const std::string& action, const std::string& text)> callback) {
+    offline_command_detected_callback_ = std::move(callback);
 }
 
 void AfeAudioEngine::OnOutput(std::function<void(std::vector<int16_t>&& data)> callback) {

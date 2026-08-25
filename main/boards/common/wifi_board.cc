@@ -25,6 +25,8 @@ static const char *TAG = "WifiBoard";
 
 // Connection timeout in seconds
 static constexpr int CONNECT_TIMEOUT_SEC = 60;
+static constexpr char WIFI_CONFIG_SETTINGS_NAMESPACE[] = "wifi_config";
+static constexpr char FORCE_CONFIG_ONCE_KEY[] = "force_once";
 
 WifiBoard::WifiBoard() {
     // Create connection timeout timer
@@ -92,6 +94,20 @@ void WifiBoard::StartNetwork() {
                 break;
         }
     });
+
+    bool force_config_once = false;
+    {
+        Settings settings(WIFI_CONFIG_SETTINGS_NAMESPACE, true);
+        force_config_once = settings.GetBool(FORCE_CONFIG_ONCE_KEY, false);
+        if (force_config_once) {
+            settings.EraseKey(FORCE_CONFIG_ONCE_KEY);
+        }
+    }
+    if (force_config_once) {
+        ESP_LOGI(TAG, "Consuming one-shot request for local WiFi configuration");
+        StartWifiConfigMode();
+        return;
+    }
 
     // Try to connect or enter config mode
     TryWifiConnect();
@@ -232,6 +248,15 @@ void WifiBoard::EnterWifiConfigMode() {
     WifiManager::GetInstance().StopStation();
 
     StartWifiConfigMode();
+}
+
+void WifiBoard::RebootIntoWifiConfigMode() {
+    {
+        Settings settings(WIFI_CONFIG_SETTINGS_NAMESPACE, true);
+        settings.SetBool(FORCE_CONFIG_ONCE_KEY, true);
+    }
+    ESP_LOGI(TAG, "Stored one-shot WiFi configuration request; rebooting");
+    Application::GetInstance().Reboot();
 }
 
 bool WifiBoard::IsInWifiConfigMode() const {

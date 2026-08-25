@@ -618,6 +618,68 @@ def read_custom_wake_word_from_sdkconfig(sdkconfig_path):
     return None
 
 
+def read_offline_wifi_command_from_sdkconfig(sdkconfig_path):
+    """Read the optional server-independent Wi-Fi configuration command."""
+    if not os.path.exists(sdkconfig_path):
+        print(f"Warning: sdkconfig file not found: {sdkconfig_path}")
+        return None
+
+    command = None
+    display = None
+    with io.open(sdkconfig_path, "r", encoding="utf-8") as f:
+        for line in f:
+            line = line.strip("\n")
+            if line.startswith("#") or "=" not in line:
+                continue
+            key, value = line.split("=", 1)
+            value = value.strip('"')
+            if key == "CONFIG_OFFLINE_WIFI_CONFIG_VOICE_COMMAND":
+                command = value
+            elif key == "CONFIG_OFFLINE_WIFI_CONFIG_VOICE_COMMAND_DISPLAY":
+                display = value
+
+    if command and display:
+        return {"command": command, "display": display}
+    return None
+
+
+def build_multinet_model_info(custom_wake_word, offline_wifi_command, multinet_models):
+    """Build the runtime command contract embedded in assets/index.json."""
+    if not custom_wake_word or not multinet_models:
+        return None
+
+    commands = []
+
+    def append_phrases(command_value, display_value, action):
+        phrases = [phrase.strip() for phrase in command_value.split(",") if phrase.strip()]
+        labels = [label.strip() for label in display_value.split("/") if label.strip()]
+        for index, phrase in enumerate(phrases):
+            commands.append(
+                {
+                    "command": phrase,
+                    "text": labels[index] if len(labels) == len(phrases) else display_value,
+                    "action": action,
+                }
+            )
+
+    # esp_mn_commands_add() accepts one phrase per call. Commas in sdkconfig mirror
+    # ESP-SR's menuconfig syntax and must be expanded before runtime registration.
+    append_phrases(custom_wake_word["wake_word"], custom_wake_word["display"], "wake")
+    if offline_wifi_command:
+        append_phrases(
+            offline_wifi_command["command"],
+            offline_wifi_command["display"],
+            "wifi_config",
+        )
+
+    return {
+        "language": get_language_from_multinet_models(multinet_models),
+        "duration": 3000,
+        "threshold": custom_wake_word["threshold"],
+        "commands": commands,
+    }
+
+
 def get_language_from_multinet_models(multinet_models):
     """
     Determine language from multinet model names
@@ -909,28 +971,20 @@ def main():
     
     # Read custom wake word configuration
     custom_wake_word_config = read_custom_wake_word_from_sdkconfig(args.sdkconfig)
-    multinet_model_info = None
+    offline_wifi_command = read_offline_wifi_command_from_sdkconfig(args.sdkconfig)
+    multinet_model_info = build_multinet_model_info(
+        custom_wake_word_config, offline_wifi_command, multinet_model_names)
     
-    if custom_wake_word_config and multinet_model_paths:
-        # Determine language from multinet models
-        language = get_language_from_multinet_models(multinet_model_names)
-        
-        # Build multinet_model info structure
-        multinet_model_info = {
-            "language": language,
-            "duration": 3000,  # Default duration in ms
-            "threshold": custom_wake_word_config['threshold'],
-            "commands": [
-                {
-                    "command": custom_wake_word_config['wake_word'],
-                    "text": custom_wake_word_config['display'],
-                    "action": "wake"
-                }
-            ]
-        }
+    if multinet_model_info and multinet_model_paths:
+        language = multinet_model_info["language"]
         print(f"  custom wake word: {custom_wake_word_config['wake_word']} ({custom_wake_word_config['display']})")
         print(f"  wake word language: {language}")
         print(f"  wake word threshold: {custom_wake_word_config['threshold']}")
+        if offline_wifi_command:
+            print(
+                "  offline Wi-Fi command: "
+                f"{offline_wifi_command['command']} ({offline_wifi_command['display']})"
+            )
     
     # Check if we have anything to build
     if not wakenet_model_paths and not multinet_model_paths and not text_font_path and not emoji_collection_path and not extra_files_path and not multinet_model_info:

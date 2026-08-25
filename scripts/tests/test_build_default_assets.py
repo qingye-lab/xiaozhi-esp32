@@ -14,6 +14,50 @@ SPEC.loader.exec_module(BUILD)
 
 
 class BuildDefaultAssetsTest(unittest.TestCase):
+    def test_multinet_metadata_keeps_wake_and_offline_wifi_actions_separate(self):
+        wake = {"wake_word": "ni hao xiao zhi", "display": "你好小智", "threshold": 0.25}
+        wifi = {
+            "command": "kai shi pei wang,chong xin pei wang",
+            "display": "开始配网/重新配网",
+        }
+        info = BUILD.build_multinet_model_info(wake, wifi, ["mn5q8_cn"])
+        self.assertEqual(info["language"], "cn")
+        self.assertEqual(info["threshold"], 0.25)
+        self.assertEqual(
+            info["commands"],
+            [
+                {"command": "ni hao xiao zhi", "text": "你好小智", "action": "wake"},
+                {
+                    "command": "kai shi pei wang",
+                    "text": "开始配网",
+                    "action": "wifi_config",
+                },
+                {
+                    "command": "chong xin pei wang",
+                    "text": "重新配网",
+                    "action": "wifi_config",
+                },
+            ],
+        )
+
+    def test_offline_wifi_command_requires_command_and_display(self):
+        with tempfile.TemporaryDirectory() as directory:
+            sdkconfig = Path(directory) / "sdkconfig"
+            sdkconfig.write_text(
+                'CONFIG_OFFLINE_WIFI_CONFIG_VOICE_COMMAND="kai shi pei wang"\n',
+                encoding="utf-8",
+            )
+            self.assertIsNone(BUILD.read_offline_wifi_command_from_sdkconfig(sdkconfig))
+            sdkconfig.write_text(
+                'CONFIG_OFFLINE_WIFI_CONFIG_VOICE_COMMAND="kai shi pei wang"\n'
+                'CONFIG_OFFLINE_WIFI_CONFIG_VOICE_COMMAND_DISPLAY="开始配网"\n',
+                encoding="utf-8",
+            )
+            self.assertEqual(
+                BUILD.read_offline_wifi_command_from_sdkconfig(sdkconfig),
+                {"command": "kai shi pei wang", "display": "开始配网"},
+            )
+
     def test_explicit_emoji_collection_path_takes_precedence(self):
         with tempfile.TemporaryDirectory() as explicit, tempfile.TemporaryDirectory() as noto:
             resolved = BUILD.resolve_emoji_collection_path(

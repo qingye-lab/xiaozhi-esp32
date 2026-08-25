@@ -6,6 +6,13 @@
         {
             "name": "atk-dnesp32s3",
             "sdkconfig_append": [
+                "CONFIG_USE_CUSTOM_WAKE_WORD=y",
+                "CONFIG_CUSTOM_WAKE_WORD=\"ni hao xiao zhi\"",
+                "CONFIG_CUSTOM_WAKE_WORD_DISPLAY=\"你好小智\"",
+                "CONFIG_CUSTOM_WAKE_WORD_THRESHOLD=25",
+                "CONFIG_OFFLINE_WIFI_CONFIG_VOICE_COMMAND=\"kai shi pei wang,chong xin pei wang\"",
+                "CONFIG_OFFLINE_WIFI_CONFIG_VOICE_COMMAND_DISPLAY=\"开始配网/重新配网\"",
+                "CONFIG_SR_MN_CN_MULTINET5_RECOGNITION_QUANT8=y",
                 "CONFIG_CAMERA_OV2640=y",
                 "CONFIG_CAMERA_OV2640_AUTO_DETECT_DVP_INTERFACE_SENSOR=y",
                 "CONFIG_CAMERA_OV2640_DVP_YUV422_240X240_25FPS=y"
@@ -14,6 +21,13 @@
         {
             "name": "atk-dnesp32s3-ov5640",
             "sdkconfig_append": [
+                "CONFIG_USE_CUSTOM_WAKE_WORD=y",
+                "CONFIG_CUSTOM_WAKE_WORD=\"ni hao xiao zhi\"",
+                "CONFIG_CUSTOM_WAKE_WORD_DISPLAY=\"你好小智\"",
+                "CONFIG_CUSTOM_WAKE_WORD_THRESHOLD=25",
+                "CONFIG_OFFLINE_WIFI_CONFIG_VOICE_COMMAND=\"kai shi pei wang,chong xin pei wang\"",
+                "CONFIG_OFFLINE_WIFI_CONFIG_VOICE_COMMAND_DISPLAY=\"开始配网/重新配网\"",
+                "CONFIG_SR_MN_CN_MULTINET5_RECOGNITION_QUANT8=y",
                 "CONFIG_CAMERA_OV5640=y",
                 "CONFIG_CAMERA_OV5640_AUTO_DETECT_DVP_INTERFACE_SENSOR=y",
                 "CONFIG_CAMERA_OV5640_DVP_YUV422_800X600_10FPS=y",

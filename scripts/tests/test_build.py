@@ -440,6 +440,18 @@ class BoardSelectionTests(unittest.TestCase):
         )
         self.assertFalse(any("OV2640" in option for option in ov5640_options))
 
+        offline_voice_options = {
+            "CONFIG_USE_CUSTOM_WAKE_WORD=y",
+            'CONFIG_CUSTOM_WAKE_WORD="ni hao xiao zhi"',
+            'CONFIG_CUSTOM_WAKE_WORD_DISPLAY="你好小智"',
+            "CONFIG_CUSTOM_WAKE_WORD_THRESHOLD=25",
+            'CONFIG_OFFLINE_WIFI_CONFIG_VOICE_COMMAND="kai shi pei wang,chong xin pei wang"',
+            'CONFIG_OFFLINE_WIFI_CONFIG_VOICE_COMMAND_DISPLAY="开始配网/重新配网"',
+            "CONFIG_SR_MN_CN_MULTINET5_RECOGNITION_QUANT8=y",
+        }
+        self.assertTrue(offline_voice_options.issubset(ov2640_options))
+        self.assertTrue(offline_voice_options.issubset(ov5640_options))
+
         config_header = (board_dir / "config.h").read_text(encoding="utf-8")
         board_source = (board_dir / "atk_dnesp32s3.cc").read_text(
             encoding="utf-8"

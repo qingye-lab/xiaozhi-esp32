@@ -79,6 +79,21 @@ void Application::Initialize() {
     callbacks.on_wake_word_detected = [this](const std::string& wake_word) {
         xEventGroupSetBits(event_group_, MAIN_EVENT_WAKE_WORD_DETECTED);
     };
+    callbacks.on_offline_command_detected =
+        [this](const std::string& action, const std::string& text) {
+            Schedule([this, action, text]() {
+                auto& board = Board::GetInstance();
+                ESP_LOGI(TAG, "Offline voice command detected: action=%s text=%s",
+                         action.c_str(), text.c_str());
+                if (!board.HandleOfflineVoiceCommand(action, text)) {
+                    ESP_LOGW(TAG, "Offline voice action is not supported by this board: %s",
+                             action.c_str());
+                    if (GetDeviceState() != kDeviceStateWifiConfiguring) {
+                        audio_service_.EnableWakeWordDetection(true);
+                    }
+                }
+            });
+        };
     callbacks.on_vad_change = [this](bool speaking) {
         xEventGroupSetBits(event_group_, MAIN_EVENT_VAD_CHANGE);
     };
@@ -423,7 +438,13 @@ void Application::CheckAssetsVersion() {
     }
 
     // Apply assets
-    assets.Apply();
+    const bool assets_applied = assets.Apply();
+    if (assets_applied && board.HasOfflineVoiceCommands()) {
+        // This board can act on fixed local commands even while online activation is retrying.
+        // The command handler reboots through a one-shot flag, avoiding concurrent teardown of
+        // an activation task that may still own OTA/protocol resources.
+        audio_service_.EnableWakeWordDetection(true);
+    }
     display->SetChatMessage("system", "");
     display->SetEmotion("robot_2");
 }
@@ -910,8 +931,14 @@ void Application::HandleWakeWordDetectedEvent() {
             SetListeningMode(GetDefaultListeningMode());
         }
     } else if (state == kDeviceStateActivating) {
-        // Restart the activation check if the wake word is detected during activation
-        SetDeviceState(kDeviceStateIdle);
+        if (Board::GetInstance().HasOfflineVoiceCommands()) {
+            // MultiNet also contains the normal online wake phrase. Ignore it during activation
+            // but keep listening for the local Wi-Fi commands.
+            audio_service_.EnableWakeWordDetection(true);
+        } else {
+            // Restart the activation check if the wake word is detected during activation
+            SetDeviceState(kDeviceStateIdle);
+        }
     }
 }
 

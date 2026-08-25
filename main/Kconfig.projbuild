@@ -918,6 +918,23 @@ config CUSTOM_WAKE_WORD_THRESHOLD
     help
         Custom Wake Word Threshold, range 1-99, the smaller the more sensitive, default 20
 
+config OFFLINE_WIFI_CONFIG_VOICE_COMMAND
+    string "Offline Wi-Fi configuration voice command"
+    default ""
+    depends on USE_CUSTOM_WAKE_WORD && USE_HOTSPOT_WIFI_PROVISIONING
+    help
+        Optional MultiNet command phrase used to enter the local Wi-Fi hotspot without
+        contacting the server. Chinese commands use space-separated pinyin. MultiNet5
+        alternatives may be separated by a comma. Leave empty to disable.
+
+config OFFLINE_WIFI_CONFIG_VOICE_COMMAND_DISPLAY
+    string "Offline Wi-Fi configuration command display text"
+    default ""
+    depends on OFFLINE_WIFI_CONFIG_VOICE_COMMAND != ""
+    help
+        Human-readable text logged and displayed when the offline Wi-Fi command is
+        recognized. This value is metadata only and is never sent to the server.
+
 config SEND_WAKE_WORD_DATA
     bool "Send Wake Word Data"
     default y

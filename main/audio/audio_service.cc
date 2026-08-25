@@ -105,6 +105,13 @@ void AudioService::Initialize(AudioCodec* codec) {
             callbacks_.on_wake_word_detected(wake_word);
         }
     });
+    audio_engine_->OnOfflineCommandDetected(
+        [this](const std::string& action, const std::string& text) {
+            xEventGroupClearBits(event_group_, AS_EVENT_WAKE_WORD_RUNNING);
+            if (callbacks_.on_offline_command_detected) {
+                callbacks_.on_offline_command_detected(action, text);
+            }
+        });
 
     esp_timer_create_args_t audio_power_timer_args = {
         .callback = [](void* arg) {

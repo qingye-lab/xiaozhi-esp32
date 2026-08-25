@@ -82,6 +82,12 @@ public:
     virtual void SetPowerSaveLevel(PowerSaveLevel level) = 0;
     virtual std::string GetBoardJson() = 0;
     virtual std::string GetDeviceStatusJson() = 0;
+    virtual bool HasOfflineVoiceCommands() const { return false; }
+    virtual bool HandleOfflineVoiceCommand(const std::string& action, const std::string& text) {
+        (void)action;
+        (void)text;
+        return false;
+    }
 };
 
 #define DECLARE_BOARD(BOARD_CLASS_NAME) \

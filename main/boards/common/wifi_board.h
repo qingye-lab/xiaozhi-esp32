@@ -59,6 +59,12 @@ public:
      * Enter WiFi configuration mode (thread-safe, can be called from any task)
      */
     void EnterWifiConfigMode();
+
+    /**
+     * Persist a one-shot request and reboot into the local configuration hotspot.
+     * Existing credentials are preserved and retried after the next normal reboot.
+     */
+    void RebootIntoWifiConfigMode();
     
     /**
      * Check if in WiFi config mode
