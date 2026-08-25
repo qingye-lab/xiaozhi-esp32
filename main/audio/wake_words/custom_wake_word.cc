@@ -124,7 +124,8 @@ bool CustomWakeWord::Initialize(AudioCodec* codec, srmodel_list_t* models_list) 
     input_buffer_.reserve(multinet_->get_samp_chunksize(multinet_model_data_));
     esp_mn_commands_clear();
     for (size_t i = 0; i < commands_.size(); ++i) {
-        esp_err_t error = esp_mn_commands_add(static_cast<int>(i + 1), commands_[i].command.c_str());
+        esp_err_t error =
+            esp_mn_commands_add(static_cast<int>(i + 1), commands_[i].command.c_str());
         if (error != ESP_OK) {
             ESP_LOGE(TAG, "Invalid MultiNet command '%s': %s", commands_[i].command.c_str(),
                      esp_err_to_name(error));
@@ -205,8 +206,8 @@ void CustomWakeWord::FeedSamples(const int16_t* data, size_t samples, bool mono)
         if (mn_state == ESP_MN_STATE_DETECTED) {
             esp_mn_results_t *mn_result = multinet_->get_results(multinet_model_data_);
             for (int i = 0; mn_result != nullptr && i < mn_result->num && running_; ++i) {
-                ESP_LOGI(TAG, "Custom wake word detected: command_id=%d, string=%s, prob=%f", 
-                        mn_result->command_id[i], mn_result->string, mn_result->prob[i]);
+                ESP_LOGI(TAG, "Custom wake word detected: command_id=%d, string=%s, prob=%f",
+                         mn_result->command_id[i], mn_result->string, mn_result->prob[i]);
                 const int command_index = mn_result->command_id[i] - 1;
                 if (command_index < 0 || command_index >= static_cast<int>(commands_.size())) {
                     ESP_LOGE(TAG, "MultiNet returned invalid command id %d",
@@ -218,7 +219,7 @@ void CustomWakeWord::FeedSamples(const int16_t* data, size_t samples, bool mono)
                     last_detected_wake_word_ = command.text;
                     running_ = false;
                     input_buffer_.clear();
-                    
+
                     if (wake_word_detected_callback_) {
                         wake_word_detected_callback_(last_detected_wake_word_);
                     }

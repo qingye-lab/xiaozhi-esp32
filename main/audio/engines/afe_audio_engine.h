@@ -88,8 +88,7 @@ private:
     std::mutex input_buffer_mutex_;
 
     std::function<void(const std::string&)> wake_word_detected_callback_;
-    std::function<void(const std::string&, const std::string&)>
-        offline_command_detected_callback_;
+    std::function<void(const std::string&, const std::string&)> offline_command_detected_callback_;
     std::function<void(std::vector<int16_t>&&)> output_callback_;
     std::function<void(bool)> vad_state_change_callback_;
 

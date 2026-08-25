@@ -57,6 +57,13 @@ bool Assets::Apply(bool refresh_display_theme) {
     return strategy_ ? strategy_->Apply(this, refresh_display_theme) : false;
 }
 
+bool Assets::LoadSpeechModels() {
+    if (!partition_valid_) {
+        return false;
+    }
+    return LoadSrmodelsFromIndex(this);
+}
+
 bool Assets::InitializePartition() {
     return strategy_ ? strategy_->InitializePartition(this) : false;
 }
@@ -106,12 +113,16 @@ bool Assets::LoadSrmodelsFromIndex(Assets* assets, cJSON* root) {
 
     cJSON* srmodels = cJSON_GetObjectItem(root, "srmodels");
     if (cJSON_IsString(srmodels)) {
+        if (assets->models_list_ != nullptr) {
+            Application::GetInstance().GetAudioService().SetModelsList(assets->models_list_);
+            if (need_delete_root) {
+                cJSON_Delete(root);
+            }
+            return true;
+        }
+
         std::string srmodels_file = srmodels->valuestring;
         if (assets->GetAssetData(srmodels_file, ptr, size)) {
-            if (assets->models_list_ != nullptr) {
-                esp_srmodel_deinit(assets->models_list_);
-                assets->models_list_ = nullptr;
-            }
             assets->models_list_ = srmodel_load(static_cast<uint8_t*>(ptr));
             if (assets->models_list_ != nullptr) {
                 auto& app = Application::GetInstance();

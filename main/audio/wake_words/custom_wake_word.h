@@ -57,8 +57,7 @@ private:
     std::deque<Command> commands_;
  
     std::function<void(const std::string& wake_word)> wake_word_detected_callback_;
-    std::function<void(const std::string&, const std::string&)>
-        offline_command_detected_callback_;
+    std::function<void(const std::string&, const std::string&)> offline_command_detected_callback_;
     AudioCodec* codec_ = nullptr;
     std::string last_detected_wake_word_;
     std::atomic<bool> running_ = false;

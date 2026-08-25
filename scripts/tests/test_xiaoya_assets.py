@@ -213,6 +213,28 @@ int main() {
             )
             subprocess.run([str(binary)], check=True)
 
+    def test_offline_wifi_voice_starts_before_network(self):
+        application = (ROOT / "main/application.cc").read_text(encoding="utf-8")
+        initialize = application.split("void Application::Initialize()", 1)[1].split(
+            "void Application::Run()", 1
+        )[0]
+        self.assertLess(
+            initialize.index("LoadSpeechModels()"),
+            initialize.index("audio_service_.Initialize(codec)"),
+        )
+        self.assertLess(
+            initialize.index("audio_service_.EnableWakeWordDetection(true)"),
+            initialize.index("board.StartNetwork()"),
+        )
+        self.assertIn('GetString("download_url").empty()', initialize)
+
+        assets = (ROOT / "main/assets.cc").read_text(encoding="utf-8")
+        loader = assets.split("bool Assets::LoadSrmodelsFromIndex", 1)[1].split(
+            "#if HAVE_LVGL", 1
+        )[0]
+        self.assertIn("if (assets->models_list_ != nullptr)", loader)
+        self.assertNotIn("esp_srmodel_deinit", loader)
+
 
 if __name__ == "__main__":
     unittest.main()

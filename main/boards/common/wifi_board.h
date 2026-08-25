@@ -65,7 +65,7 @@ public:
      * Existing credentials are preserved and retried after the next normal reboot.
      */
     void RebootIntoWifiConfigMode();
-    
+
     /**
      * Check if in WiFi config mode
      */

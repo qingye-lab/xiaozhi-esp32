@@ -67,6 +67,19 @@ void Application::Initialize() {
     // Print board name/version info
     display->SetChatMessage("system", SystemInfo::GetUserAgent().c_str());
 
+    bool offline_voice_ready = false;
+    if (board.HasOfflineVoiceCommands()) {
+        Settings asset_settings("assets", true);
+        if (asset_settings.GetString("download_url").empty()) {
+            // Local commands must be available while Wi-Fi is still connecting. Do not start a
+            // speech engine from the current partition when an asset replacement is pending: the
+            // existing download path needs exclusive access to unmap and rewrite that partition.
+            offline_voice_ready = Assets::GetInstance().LoadSpeechModels();
+        } else {
+            ESP_LOGI(TAG, "Deferring offline voice model startup until pending assets are updated");
+        }
+    }
+
     // Setup the audio service
     auto codec = board.GetAudioCodec();
     audio_service_.Initialize(codec);
@@ -79,21 +92,21 @@ void Application::Initialize() {
     callbacks.on_wake_word_detected = [this](const std::string& wake_word) {
         xEventGroupSetBits(event_group_, MAIN_EVENT_WAKE_WORD_DETECTED);
     };
-    callbacks.on_offline_command_detected =
-        [this](const std::string& action, const std::string& text) {
-            Schedule([this, action, text]() {
-                auto& board = Board::GetInstance();
-                ESP_LOGI(TAG, "Offline voice command detected: action=%s text=%s",
-                         action.c_str(), text.c_str());
-                if (!board.HandleOfflineVoiceCommand(action, text)) {
-                    ESP_LOGW(TAG, "Offline voice action is not supported by this board: %s",
-                             action.c_str());
-                    if (GetDeviceState() != kDeviceStateWifiConfiguring) {
-                        audio_service_.EnableWakeWordDetection(true);
-                    }
+    callbacks.on_offline_command_detected = [this](const std::string& action,
+                                                   const std::string& text) {
+        Schedule([this, action, text]() {
+            auto& board = Board::GetInstance();
+            ESP_LOGI(TAG, "Offline voice command detected: action=%s text=%s", action.c_str(),
+                     text.c_str());
+            if (!board.HandleOfflineVoiceCommand(action, text)) {
+                ESP_LOGW(TAG, "Offline voice action is not supported by this board: %s",
+                         action.c_str());
+                if (GetDeviceState() != kDeviceStateWifiConfiguring) {
+                    audio_service_.EnableWakeWordDetection(true);
                 }
-            });
-        };
+            }
+        });
+    };
     callbacks.on_vad_change = [this](bool speaking) {
         xEventGroupSetBits(event_group_, MAIN_EVENT_VAD_CHANGE);
     };
@@ -104,6 +117,9 @@ void Application::Initialize() {
         notify_player_.OnPlaybackProgress(playback_id, media_position_ms);
     };
     audio_service_.SetCallbacks(callbacks);
+    if (offline_voice_ready) {
+        audio_service_.EnableWakeWordDetection(true);
+    }
 
     // Add state change listeners
     state_machine_.AddStateChangeListener([this](DeviceState old_state, DeviceState new_state) {
