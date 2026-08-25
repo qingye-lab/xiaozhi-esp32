@@ -236,9 +236,13 @@ private:
                     display->ShowNotification("成长记忆已清除");
                 } else {
                     profile_clear_deadline_ms_.store(0);
-                    camera_->Arm();
-                    display->ShowNotification("相机已确认，请说“拍吧”");
-                    app.StartListening();
+                    std::string reason;
+                    if (camera_->Arm(reason)) {
+                        display->ShowNotification("相机已确认，请说“拍吧”");
+                        app.StartListening();
+                    } else {
+                        display->ShowNotification(reason);
+                    }
                 }
                 break;
             case KidKey::kKey3:
@@ -272,9 +276,19 @@ private:
     void InitializeTools() {
         auto& mcp_server = McpServer::GetInstance();
         mcp_server.AddTool(
+            "self.camera.request_photo",
+            "仅在孩子明确用语音提出拍照请求时调用。登记后请提示孩子按 KEY2；未登记时 KEY2 "
+            "不会授权相机。登记 60 秒后自动失效，不拍照、不上传，也不保存任何内容。",
+            PropertyList(), [this](const PropertyList&) -> ReturnValue {
+                camera_->Request();
+                return std::string("请按 KEY2，看到确认提示后再说‘拍吧’。");
+            });
+
+        mcp_server.AddTool(
             "self.sensors.get_environment",
             "读取设备周围的粗粒度环境状态。用户询问光线、设备是否放稳或是否有手靠近时使用。"
-            "只返回 dark/normal/bright、near 和 stable/moving，不用于跟踪儿童。",
+            "只返回 dark/normal/bright、near 和 stable/moving，不用于跟踪儿童。传感器不可用时"
+            "对应值为 unknown 或 null，必须如实说明无法判断。",
             PropertyList(), [this](const PropertyList&) -> ReturnValue {
                 return sensor_hub_->GetEnvironmentJson();
             });

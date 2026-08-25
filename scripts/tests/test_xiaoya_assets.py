@@ -124,6 +124,8 @@ int main() {
     assert(ClampOutputVolume(45) == 45);
     assert(ClampOutputVolume(70) == 70);
     assert(ClampOutputVolume(100) == 70);
+    assert(std::string(EnvironmentLightName(false, LightLevel::kNormal)) == "unknown");
+    assert(std::string(EnvironmentLightName(true, LightLevel::kDark)) == "dark");
 
     LegacyCamera legacy_camera;
     std::string camera_reason = "stale";
@@ -156,13 +158,24 @@ int main() {
     CameraConsentState consent;
     std::string reason;
     assert(!consent.Prepare(0, true, true, reason));
-    consent.Arm(100);
+    assert(!consent.Arm(100, reason));
+    consent.Request(100);
+    assert(consent.IsRequestPending(101));
+    assert(consent.Arm(101, reason));
+    assert(!consent.IsRequestPending(101));
     assert(!consent.Prepare(101, true, false, reason));
     assert(consent.Prepare(101, true, true, reason));
     consent.Consume();
     assert(!consent.IsArmed(102));
-    consent.Arm(100);
+    consent.Request(100);
+    assert(consent.Arm(100, reason));
     assert(!consent.Prepare(20101, true, true, reason));
+    consent.Request(100);
+    assert(!consent.Arm(60101, reason));
+    consent.Request(100);
+    consent.Cancel();
+    assert(!consent.IsRequestPending(101));
+    assert(!consent.Arm(101, reason));
 
     ButtonDebouncer click;
     assert(click.Update(true, 0) == ButtonEvent::kNone);

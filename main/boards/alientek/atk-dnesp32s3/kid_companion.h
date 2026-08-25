@@ -64,8 +64,10 @@ class ChildSafeCamera : public Camera {
 public:
     ChildSafeCamera(Camera* delegate, KidSensorHub* sensors);
 
-    void Arm();
+    void Request();
+    bool Arm(std::string& reason);
     void Cancel();
+    bool IsRequestPending() const;
     bool IsArmed() const;
 
     void SetExplainUrl(const std::string& url, const std::string& token) override;
@@ -84,6 +86,7 @@ private:
     KidSensorHub* sensors_;
     mutable std::mutex mutex_;
     kid_companion::CameraConsentState consent_;
+    bool capture_in_progress_ = false;
 };
 
 class ChildProfile {

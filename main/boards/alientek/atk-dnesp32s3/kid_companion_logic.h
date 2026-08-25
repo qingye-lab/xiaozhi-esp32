@@ -29,6 +29,10 @@ inline const char* LightLevelName(LightLevel level) {
     }
 }
 
+inline const char* EnvironmentLightName(bool available, LightLevel level) {
+    return available ? LightLevelName(level) : "unknown";
+}
+
 class LightClassifier {
 public:
     LightLevel Update(uint16_t ambient) {
@@ -113,11 +117,36 @@ private:
 
 class CameraConsentState {
 public:
+    static constexpr int64_t kRequestWindowMs = 60'000;
     static constexpr int64_t kAuthorizationWindowMs = 20'000;
 
-    void Arm(int64_t now_ms) { armed_until_ms_ = now_ms + kAuthorizationWindowMs; }
-    void Cancel() { armed_until_ms_ = 0; }
-    void Consume() { Cancel(); }
+    void Request(int64_t now_ms) {
+        request_until_ms_ = now_ms + kRequestWindowMs;
+        armed_until_ms_ = 0;
+    }
+
+    bool Arm(int64_t now_ms, std::string& reason) {
+        if (!IsRequestPending(now_ms)) {
+            request_until_ms_ = 0;
+            reason = "请先用语音告诉小芽想拍什么。";
+            return false;
+        }
+        request_until_ms_ = 0;
+        armed_until_ms_ = now_ms + kAuthorizationWindowMs;
+        reason.clear();
+        return true;
+    }
+
+    void Cancel() {
+        request_until_ms_ = 0;
+        armed_until_ms_ = 0;
+    }
+
+    void Consume() { armed_until_ms_ = 0; }
+
+    bool IsRequestPending(int64_t now_ms) const {
+        return request_until_ms_ > 0 && now_ms <= request_until_ms_;
+    }
 
     bool IsArmed(int64_t now_ms) const { return armed_until_ms_ > 0 && now_ms <= armed_until_ms_; }
 
@@ -136,6 +165,7 @@ public:
     }
 
 private:
+    int64_t request_until_ms_ = 0;
     int64_t armed_until_ms_ = 0;
 };
 

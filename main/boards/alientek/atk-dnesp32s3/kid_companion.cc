@@ -256,8 +256,13 @@ bool KidSensorHub::IsStable() const {
 std::string KidSensorHub::GetEnvironmentJson() const {
     std::lock_guard<std::mutex> lock(state_mutex_);
     cJSON* root = cJSON_CreateObject();
-    cJSON_AddStringToObject(root, "light", kid_companion::LightLevelName(light_));
-    cJSON_AddBoolToObject(root, "near", near_);
+    cJSON_AddStringToObject(root, "light",
+                            kid_companion::EnvironmentLightName(ap_available_, light_));
+    if (ap_available_) {
+        cJSON_AddBoolToObject(root, "near", near_);
+    } else {
+        cJSON_AddNullToObject(root, "near");
+    }
     cJSON_AddStringToObject(root, "motion",
                             qma_available_ ? (stable_ ? "stable" : "moving") : "unknown");
     cJSON* available = cJSON_CreateObject();
@@ -276,9 +281,14 @@ ChildSafeCamera::ChildSafeCamera(Camera* delegate, KidSensorHub* sensors)
 
 int64_t ChildSafeCamera::NowMs() { return esp_timer_get_time() / 1000; }
 
-void ChildSafeCamera::Arm() {
+void ChildSafeCamera::Request() {
     std::lock_guard<std::mutex> lock(mutex_);
-    consent_.Arm(NowMs());
+    consent_.Request(NowMs());
+}
+
+bool ChildSafeCamera::Arm(std::string& reason) {
+    std::lock_guard<std::mutex> lock(mutex_);
+    return consent_.Arm(NowMs(), reason);
 }
 
 void ChildSafeCamera::Cancel() {
@@ -291,16 +301,26 @@ bool ChildSafeCamera::IsArmed() const {
     return consent_.IsArmed(NowMs());
 }
 
+bool ChildSafeCamera::IsRequestPending() const {
+    std::lock_guard<std::mutex> lock(mutex_);
+    return consent_.IsRequestPending(NowMs());
+}
+
 void ChildSafeCamera::SetExplainUrl(const std::string& url, const std::string& token) {
     delegate_->SetExplainUrl(url, token);
 }
 
 std::string ChildSafeCamera::GetCaptureInstructions() const {
-    return "拍照前必须先请孩子按 KEY2 做一次物理确认；确认仅在 20 秒内对一张照片有效。";
+    return "孩子先用语音提出拍照请求；调用 self.camera.request_photo 登记本次请求后，再请孩子"
+           "按 KEY2。按键确认仅在 20 秒内对一张照片有效，随后孩子说‘拍吧’才能调用本工具。";
 }
 
 bool ChildSafeCamera::PrepareCapture(std::string& reason) {
     std::lock_guard<std::mutex> lock(mutex_);
+    if (capture_in_progress_) {
+        reason = "相机正在处理上一张照片，请稍等。";
+        return false;
+    }
     bool available = sensors_ != nullptr && sensors_->StabilityAvailable();
     bool stable = sensors_ == nullptr || sensors_->IsStable();
     return consent_.Prepare(NowMs(), available, stable, reason);
@@ -310,16 +330,23 @@ bool ChildSafeCamera::Capture() {
     std::string reason;
     {
         std::lock_guard<std::mutex> lock(mutex_);
+        if (capture_in_progress_) {
+            return false;
+        }
         bool available = sensors_ != nullptr && sensors_->StabilityAvailable();
         bool stable = sensors_ == nullptr || sensors_->IsStable();
         if (!consent_.Prepare(NowMs(), available, stable, reason)) {
             return false;
         }
+        capture_in_progress_ = true;
     }
     bool captured = delegate_->Capture();
-    if (captured) {
+    {
         std::lock_guard<std::mutex> lock(mutex_);
-        consent_.Consume();
+        capture_in_progress_ = false;
+        if (captured) {
+            consent_.Consume();
+        }
     }
     return captured;
 }
